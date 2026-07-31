@@ -5,8 +5,8 @@
 - [x] **Integer promotion and the usual arithmetic conversions.** Understand when operands get widened before an operation.
 - [x] **Signed overflow is undefined behaviour; unsigned wraps.** 
 - [x] **`sizeof`.** Know what it returns and that its type is `size_t`.
-- [ ] **Alignment.** `_Alignof`, natural alignment per type.
-- [ ] **Struct padding.** Predict a struct's size before checking it with `sizeof`.
+- [x] **Alignment.** `_Alignof`, natural alignment per type.
+- [x] **Struct padding.** Predict a struct's size before checking it with `sizeof`.
 - [ ] **The four toolchain stages as four separate commands:**
   - [ ] Preprocess (`gcc -E`)
   - [ ] Compile to assembly (`gcc -S`)
