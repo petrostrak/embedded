@@ -148,8 +148,8 @@ union U { char c; double d; int i[3]; };
 
 ---
 
-# Struct padding: the three rules
-
+<details>
+<summary>Struct padding: the three rules</summary>
 **Padding** means unused bytes the compiler inserts into a struct. It inserts them because it must: members have to land on legal addresses, and the compiler is not allowed to reorder your members in C.
 
 Lay out any struct with these three rules, applied in order:
@@ -262,10 +262,12 @@ struct WithArr {
 `a` at 0, 3 bytes padding, `v` at 4 (through 15), `b` at 16, 3 bytes tail padding.
 
 **Result:** `sizeof == 20`, `alignof == 4`.
+</details>
 
 ---
 
-# The Four Stages of the GCC Toolchain
+<details>
+<summary>The Four Stages of the GCC Toolchain</summary>
 
 When you type `gcc hello.c -o hello`, it looks like one action. It's actually four programs running in sequence, each handing its output to the next:
 
@@ -427,9 +429,11 @@ gcc -v hello.c -o hello            # show the actual cc1/as/collect2 invocations
 
 **C++:** substitute `g++`; the preprocessed extension is `.ii` and the compiler proper is `cc1plus`. The rest of the pipeline is identical.
 
----
+</details>
 
-# Where Your Variables Actually Live: `.text`, `.rodata`, `.data`, `.bss`
+---
+<details>
+<summary>Where Your Variables Actually Live: `.text`, `.rodata`, `.data`, `.bss`</summary>
 
 When the compiler emits an object file, it doesn't produce one undifferentiated blob of bytes. It sorts everything you wrote into **sections** — named buckets, each with its own permissions and its own answer to the question *"do the initial bytes need to be stored in the file?"*
 
@@ -695,8 +699,6 @@ Neither appears in the ELF file, because neither has a compile-time size.
 
 `int scratch = 7;` inside a function generates no section entry at all. It's a `mov` into a stack slot or a register, and it ceases to exist when the function returns.
 
----
-
 ## Quick placement lookup
 
 | Declaration | Section | Why |
@@ -721,6 +723,10 @@ Neither appears in the ELF file, because neither has a compile-time size.
 3. **Unexpectedly huge binary?** Run `size`. A fat `.data` is almost always one big initialized array that should have been `const`.
 4. **Unexpected segfault writing to a string?** You've got a `char *` pointing at a literal in `.rodata`. Compile with `-Wwrite-strings` to make the compiler warn.
 5. **Out of RAM on a microcontroller?** `.data + .bss` is your static budget, and the linker will tell you the number before you ever flash the board.
+
+</details>
+
+---
 
 <details>
 <summary>macOS / Mach-O Addendum: Sections on Apple Silicon</summary>
