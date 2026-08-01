@@ -2,7 +2,7 @@
 ## Concepts
 
 - [x] **`stdint.h` fixed-width types.** Use `uint32_t`, `int16_t`, etc. — never bare `int` — for anything hardware-facing.
-- [x] **Integer promotion and the usual arithmetic conversions.** Understand when operands get widened before an operation.
+- [x] **[Integer promotion and the usual arithmetic conversions.](#integer-promotion-and-the-usual-arithmetic-conversions)** Understand when operands get widened before an operation.
 - [x] **Signed overflow is undefined behaviour; unsigned wraps.** 
 - [x] **`sizeof`.** Know what it returns and that its type is `size_t`.
 - [x] **Alignment.** `_Alignof`, natural alignment per type.
