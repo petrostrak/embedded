@@ -150,6 +150,7 @@ union U { char c; double d; int i[3]; };
 
 <details>
 <summary>Struct padding: the three rules</summary>
+  
 **Padding** means unused bytes the compiler inserts into a struct. It inserts them because it must: members have to land on legal addresses, and the compiler is not allowed to reorder your members in C.
 
 Lay out any struct with these three rules, applied in order:
@@ -262,6 +263,7 @@ struct WithArr {
 `a` at 0, 3 bytes padding, `v` at 4 (through 15), `b` at 16, 3 bytes tail padding.
 
 **Result:** `sizeof == 20`, `alignof == 4`.
+
 </details>
 
 ---
