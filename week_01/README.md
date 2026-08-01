@@ -719,14 +719,53 @@ Neither appears in the ELF file, because neither has a compile-time size.
 4. **Unexpected segfault writing to a string?** You've got a `char *` pointing at a literal in `.rodata`. Compile with `-Wwrite-strings` to make the compiler warn.
 5. **Out of RAM on a microcontroller?** `.data + .bss` is your static budget, and the linker will tell you the number before you ever flash the board.
 
+## The name mapping
+
+| Concept | ELF (Linux) | Mach-O (macOS) |
+|---|---|---|
+| Machine code | `.text` | `__TEXT,__text` |
+| String literals | `.rodata` | `__TEXT,__cstring` |
+| Other `const` data | `.rodata` | `__TEXT,__const` |
+| Jump tables | `.rodata` | `__TEXT,__const` |
+| Initialized writable | `.data` | `__DATA,__data` |
+| Zero-initialized | `.bss` | `__DATA,__bss` |
+| Tentative definitions | `.bss` / COMMON | `__DATA,__common` |
+| Read-only after relocation | `.data.rel.ro` (RELRO) | `__DATA_CONST,__const` |
+| GOT | `.got`, `.got.plt` | `__DATA_CONST,__got` |
+| Thread-local | `.tdata` / `.tbss` | `__DATA,__thread_data` / `__thread_bss` |
+| Unwind info | `.eh_frame` | `__TEXT,__unwind_info`, `__LD,__compact_unwind` (in `.o` only) |
+| C++ static init | `.init_array` | `__DATA,__mod_init_func` |
+
 ## Handy commands
 
 ```bash
-size --format=SysV prog          # per-section sizes
-nm -C --size-sort prog           # symbols sorted by size — find the fat ones
-readelf -SW prog                 # section headers and flags
-readelf -lW prog                 # segments: what actually gets mapped
-objdump -s -j .rodata prog       # hex dump one section
-gcc -Wwrite-strings ...          # warn on char* = "literal"
-gcc -fdata-sections -ffunction-sections ... -Wl,--gc-sections   # drop unused ones
+objdump -d toolchain.o                            # disassemble text — no -j needed
+objdump -d --section=__TEXT,__text toolchain.o    # explicit
+objdump -h toolchain.o                            # list all sections
+objdump -s --section=__TEXT,__cstring toolchain.o # hex dump the strings
+objdump --macho -l toolchain.o                    # Mach-O specific: load commands
+
+-- otool — the native equivalent
+otool -tV toolchain.o             # disassemble __text with symbolic operands
+otool -l toolchain.o              # load commands: every segment and section, with sizes
+otool -s __TEXT __cstring toolchain.o    # hex dump (note: space-separated, not comma)
+otool -s __TEXT __const toolchain.o
+otool -L ./prog                   # dynamic libraries this binary links against
+otool -hv ./prog                  # Mach header and flags (PIE, TWOLEVEL, etc.)
+
+nm -m toolchain.o                # prints the actual segment and section per symbol
+size -m toolchain.o
 ```
+
+## Quick command cheat sheet
+
+| Task | Linux | macOS |
+|---|---|---|
+| Section sizes | `size --format=SysV x.o` | `size -m x.o` |
+| List sections | `readelf -SW x.o` | `otool -l x.o` or `objdump -h x.o` |
+| Disassemble | `objdump -d x.o` | `objdump -d x.o` or `otool -tV x.o` |
+| Dump one section | `objdump -s -j .rodata x.o` | `otool -s __TEXT __const x.o` |
+| Symbols with location | `nm x.o` | `nm -m x.o` |
+| Dynamic libs | `ldd prog` | `otool -L prog` |
+| Load-time segments | `readelf -lW prog` | `otool -l prog` |
+| Trace linking | `LD_DEBUG=libs ./prog` | `DYLD_PRINT_LIBRARIES=1 ./prog` |
