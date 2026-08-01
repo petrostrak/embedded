@@ -423,3 +423,310 @@ gcc -v hello.c -o hello            # show the actual cc1/as/collect2 invocations
 ```
 
 **C++:** substitute `g++`; the preprocessed extension is `.ii` and the compiler proper is `cc1plus`. The rest of the pipeline is identical.
+
+---
+
+# Where Your Variables Actually Live: `.text`, `.rodata`, `.data`, `.bss`
+
+When the compiler emits an object file, it doesn't produce one undifferentiated blob of bytes. It sorts everything you wrote into **sections** — named buckets, each with its own permissions and its own answer to the question *"do the initial bytes need to be stored in the file?"*
+
+Two questions decide which bucket a thing lands in:
+
+1. **Can it change at runtime?** → writable or read-only
+2. **Are the initial bytes anything other than zero?** → stored in the file, or just a recorded size
+
+That's the whole model:
+
+| Section | Writable? | Executable? | Bytes stored in the file? |
+|---|---|---|---|
+| `.text` | no | **yes** | yes |
+| `.rodata` | no | no | yes |
+| `.data` | **yes** | no | yes |
+| `.bss` | **yes** | no | **no** — size only |
+
+Everything below is a consequence of that table.
+
+
+## The running example
+
+```c
+#include <stdio.h>
+
+int         counter   = 0;          // .bss    — initializer is zero
+int         limit     = 100;        // .data   — nonzero initializer
+const int   magic     = 0xCAFE;     // .rodata — const, known at compile time
+char        buffer[4096];           // .bss    — uninitialized, 4 KB of nothing
+char        greeting[] = "hello";   // .data   — mutable array, copy of the literal
+const char *name      = "world";    // pointer in .data, the string in .rodata
+static int  hits;                   // .bss    — static just changes linkage
+static const double PI = 3.14159;   // .rodata
+
+void bump(void) {                   // .text   — the machine code
+    static int calls = 0;           // .bss    — static, not on the stack
+    int scratch = 7;                // nowhere — lives on the stack at runtime
+    calls++;
+    counter++;
+    (void)scratch;
+}
+```
+
+Compile and inspect:
+
+```bash
+$ gcc -c demo.c -o demo.o
+$ size demo.o
+   text    data     bss     dec     hex filename
+     78      22    4104    4204    106c demo.o
+```
+
+Note `bss` is 4104 bytes but the object file didn't grow by 4 KB. That's the point.
+
+## `.text` — the code
+
+**Read-only, executable, stored in the file.**
+
+Everything that is machine instructions: function bodies, compiler-generated helpers, and on some targets small constant pools placed next to the code that uses them.
+
+```bash
+$ objdump -d demo.o --section=.text
+0000000000000000 <bump>:
+   0:   8b 05 00 00 00 00       mov    0x0(%rip),%eax
+   6:   83 c0 01                add    $0x1,%eax
+   ...
+```
+
+**Why read-only:** so a wild pointer or a buffer overflow can't rewrite your program while it's running. The kernel maps these pages `r-x`, and a write to them faults immediately.
+
+**Why executable and nothing else is:** this is the **W^X** rule ("write xor execute"). No page should be both writable and executable, because that's exactly what an attacker needs to inject shellcode. `.text` gets execute, `.data` gets write, and never the twain.
+
+**Why it's shareable:** because nothing ever modifies it, twenty copies of the same running binary map *the same physical pages* of `.text`. Twenty `bash` processes cost one copy of bash's code in RAM.
+
+## `.rodata` — read-only data
+
+**Read-only, non-executable, stored in the file.**
+
+What ends up here:
+
+- String literals: `"hello"`, `"%s %d\n"`
+- `const`-qualified globals with compile-time-known values
+- Jump tables generated from big `switch` statements
+- Floating-point and vector constants the instruction set can't encode inline
+- Anonymous constant aggregates the optimizer decided to materialize
+
+```bash
+$ objdump -s -j .rodata demo.o
+Contents of section .rodata:
+ 0000 fe ca 00 00 00 00 00 00  6e 86 1b f0 f9 21 09 40   ........n....!.@
+ 0010 776f 726c 6400                                     world.
+```
+
+You can see `0xCAFE` little-endian, the double for `PI`, and the bytes of `"world"`.
+
+**Why a separate section from `.text`:** both are read-only, but data is not code. Keeping constants out of the executable mapping means an attacker who tricks your program into jumping into your string table hits a non-executable page and dies instead of executing your data as instructions.
+
+**Why a separate section from `.data`:** same sharing benefit as `.text`, plus real protection. This is the reason for the single most common beginner segfault:
+
+```c
+char *s = "hello";
+s[0] = 'H';        // SIGSEGV — the literal lives in .rodata
+```
+
+versus:
+
+```c
+char s[] = "hello";
+s[0] = 'H';        // fine — the array is a writable copy in .data
+```
+
+Both lines look almost identical. In the first, `s` is a pointer to read-only storage. In the second, the compiler stores the initializer bytes and *copies* them into an array you own. Write `const char *` for string literals and the compiler will catch the mistake for you.
+
+### Where `const` does *not* mean `.rodata`
+
+- `const int x = 5;` **inside a function** is an ordinary local. It lives on the stack (or in a register, or nowhere at all if the optimizer folds it away). `const` is a promise to the type checker, not a memory placement directive.
+- `const char *p` means "pointer to const char" — the *pointee* is const, `p` itself is a mutable variable in `.data`/`.bss`. To put the pointer in read-only memory you need `const char *const p`.
+- `const int t = time(NULL);` at file scope isn't a constant expression, so it can't be baked into a read-only section as literal bytes.
+
+## `.data` — initialized, writable data
+
+**Writable, non-executable, stored in the file.**
+
+Globals and statics with a nonzero initializer. Every single byte of the initial value is physically present in the binary on disk, because the loader has to have something to copy into memory.
+
+```bash
+$ nm demo.o | grep -i ' d '
+0000000000000000 D greeting
+0000000000000008 D limit
+0000000000000010 D name
+```
+
+**Why the bytes must be in the file:** there's no way to derive `100` or `"hello"` from thin air. Contrast with `.bss`, where "all zeros" is derivable.
+
+**The cost:** `.data` is the section that makes binaries fat. A 1 MB lookup table with nonzero entries adds 1 MB to your executable. The same array left uninitialized adds ~0 bytes.
+
+**Copy-on-write:** when the same binary runs twice, the loader initially shares the `.data` pages between processes. The moment either process writes to one, the kernel silently duplicates that single 4 KB page for the writer. You pay per modified page, not for the whole section up front.
+
+### `.data.rel.ro` — the interesting middle case
+
+```c
+const char *const messages[] = { "a", "b", "c" };
+```
+
+This *should* be read-only — it's `const` all the way down. But the values are addresses, and in a position-independent executable (PIE, which is the default now) the compiler doesn't know those addresses until load time. So it can't be baked into `.rodata`.
+
+The solution is a section called `.data.rel.ro`: writable during relocation, then the dynamic linker calls `mprotect()` to flip it to read-only before your `main` runs. This is **RELRO**, and it's why the GOT is harder to attack than it used to be.
+
+```bash
+$ readelf -lW ./a.out | grep GNU_RELRO
+  GNU_RELRO      0x002d80 0x0000000000003d80 ... R
+```
+
+## `.bss` — uninitialized, writable data
+
+**Writable, non-executable, *not* stored in the file — the file only records how big it is.**
+
+The name is a fossil ("Block Started by Symbol", from a 1950s IBM assembler). Ignore the name; what matters is the behaviour.
+
+Everything here is guaranteed to be zero when your program starts, and C's rules make this free: **static-storage-duration objects with no initializer, or an initializer of zero, are zero-initialized.** So the compiler doesn't need to store the bytes. It just says "reserve 4096 bytes, name it `buffer`" and moves on.
+
+```bash
+$ nm demo.o | grep -i ' b '
+0000000000000000 b calls.0      # lowercase = static/local linkage
+0000000000000000 B buffer
+0000000000001004 B counter
+0000000000001008 b hits
+```
+
+Proof that it's free:
+
+```c
+// big.c
+char huge[100 * 1024 * 1024];   // 100 MB
+int main(void) { return huge[0]; }
+```
+
+```bash
+$ gcc big.c -o big && ls -l big
+-rwxr-xr-x  16544 big          # 16 KB on disk, 100 MB of address space at runtime
+```
+
+Change it to `char huge[100*1024*1024] = {1};` and the binary becomes 100 MB. Same array, one nonzero byte, 6000× the disk usage — because now it's `.data`.
+
+**Who zeroes it:**
+
+- **On Linux/hosted systems:** nobody, really. The kernel maps those pages from `/dev/zero` (anonymous memory), which is zero-filled by definition — and lazily, so untouched pages cost no physical RAM at all.
+- **On bare metal / embedded:** the startup code does it explicitly, with a loop that walks from `__bss_start` to `__bss_end` writing zeros before calling `main`. If you've ever written a linker script for a microcontroller, you've written this loop.
+
+## Why this matters most on embedded targets
+
+On a microcontroller the split stops being an abstraction and becomes a physical one: `.text` and `.rodata` stay in flash, `.data` and `.bss` must be in RAM.
+
+```
+FLASH (say 256 KB)        RAM (say 64 KB)
+┌──────────────┐          ┌──────────────┐
+│ .text        │          │ .data  ◄─────┼── copied from flash at boot
+│ .rodata      │          │ .bss   ◄─────┼── zeroed by a loop at boot
+│ .data (init  │──copy───►│ heap ↓       │
+│  values)     │          │ stack ↑      │
+└──────────────┘          └──────────────┘
+```
+
+Consequences that bite people:
+
+- `.data` costs you **twice** — once in flash for the initial values, once in RAM for the live copy. A big initialized table burns both budgets. Marking it `const` moves it to `.rodata` and it stays in flash only.
+- `.bss` costs RAM only, but it's charged at link time, not at runtime. If `.data + .bss + stack + heap` exceeds your RAM, the *linker* fails — you don't get to find out at runtime.
+- The boot-time `.data` copy and `.bss` zeroing loop run before `main`. Anything you touch before that runs (an early ISR, for instance) sees garbage.
+
+## Reading the tools
+
+### `size` — the budget summary
+
+```bash
+$ size --format=SysV demo.o
+section       size   addr
+.text           78      0
+.data           22      0
+.bss          4104      0
+.rodata         24      0
+```
+
+### `nm` — symbols, one letter per section
+
+| Letter | Meaning |
+|---|---|
+| `T` / `t` | `.text` — code |
+| `R` / `r` | `.rodata` — read-only data |
+| `D` / `d` | `.data` — initialized writable data |
+| `B` / `b` | `.bss` — zero-initialized data |
+| `U` | undefined — needs the linker to resolve |
+| `C` | common — legacy tentative definition |
+
+**Uppercase = global** (visible to other translation units). **Lowercase = local** (`static`). That single case distinction tells you whether a symbol can collide at link time.
+
+### `readelf` — full detail
+
+```bash
+readelf -SW demo.o        # section headers with flags
+readelf -lW ./a.out       # program headers (segments) — what the loader sees
+objdump -s -j .rodata x   # hex dump of one section
+```
+
+In the section flags, `A` = allocated into memory, `W` = writable, `X` = executable. `.text` is `AX`, `.rodata` is `A`, `.data` and `.bss` are `WA`. `.bss` has type `NOBITS` — the explicit ELF marker for "occupies no space in the file."
+
+### Sections vs segments
+
+Sections are for the **linker**. Segments (program headers) are for the **loader**. At link time, sections with matching permissions get merged into a handful of segments, because the MMU works in pages and you don't want a separate mapping per section:
+
+```
+.text + .rodata (+ .init, .plt)  →  one R-X / R-- LOAD segment
+.data + .bss                     →  one RW- LOAD segment
+```
+
+This is why `.bss` is always placed immediately after `.data` — they share a segment, and the loader just maps extra zero pages past the end of the file-backed part.
+
+## Not sections: the stack and the heap
+
+Neither appears in the ELF file, because neither has a compile-time size.
+
+- **Stack** — locals, parameters, return addresses. Created by the kernel at process start, grows downward automatically.
+- **Heap** — `malloc`. Requested from the kernel at runtime via `brk`/`mmap`.
+
+`int scratch = 7;` inside a function generates no section entry at all. It's a `mov` into a stack slot or a register, and it ceases to exist when the function returns.
+
+---
+
+## Quick placement lookup
+
+| Declaration | Section | Why |
+|---|---|---|
+| `void f(void) {...}` | `.text` | code |
+| `int g = 42;` | `.data` | nonzero initializer, writable |
+| `int g = 0;` | `.bss` | zero is free |
+| `int g;` | `.bss` | implicitly zero |
+| `static int g = 5;` | `.data` | static changes linkage, not placement |
+| `const int g = 5;` | `.rodata` | immutable, known at compile time |
+| `char a[] = "hi";` | `.data` | writable array, initializer copied in |
+| `char *p = "hi";` | `p` in `.data`, `"hi"` in `.rodata` | pointer is mutable, literal is not |
+| `const char *const p = "hi";` | `.data.rel.ro` → read-only after startup | value is a relocatable address |
+| `static const char *msgs[] = {...}` | `.data.rel.ro` | array of addresses |
+| `int local = 3;` (in a function) | stack | automatic storage duration |
+| `malloc(n)` | heap | runtime size |
+
+## Practical takeaways
+
+1. **Mark read-only tables `const`.** It moves them from `.data` to `.rodata`: smaller RAM footprint, shareable between processes, protected from stray writes, and on embedded it stays in flash entirely.
+2. **Don't initialize globals to zero explicitly.** `int x = 0;` and `int x;` behave identically, but if the optimizer doesn't fold it, you've asked for file bytes you didn't need. (Modern GCC handles this; older and cross-compilers sometimes don't.)
+3. **Unexpectedly huge binary?** Run `size`. A fat `.data` is almost always one big initialized array that should have been `const`.
+4. **Unexpected segfault writing to a string?** You've got a `char *` pointing at a literal in `.rodata`. Compile with `-Wwrite-strings` to make the compiler warn.
+5. **Out of RAM on a microcontroller?** `.data + .bss` is your static budget, and the linker will tell you the number before you ever flash the board.
+
+## Handy commands
+
+```bash
+size --format=SysV prog          # per-section sizes
+nm -C --size-sort prog           # symbols sorted by size — find the fat ones
+readelf -SW prog                 # section headers and flags
+readelf -lW prog                 # segments: what actually gets mapped
+objdump -s -j .rodata prog       # hex dump one section
+gcc -Wwrite-strings ...          # warn on char* = "literal"
+gcc -fdata-sections -ffunction-sections ... -Wl,--gc-sections   # drop unused ones
+```
