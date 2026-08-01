@@ -720,7 +720,7 @@ Neither appears in the ELF file, because neither has a compile-time size.
 5. **Out of RAM on a microcontroller?** `.data + .bss` is your static budget, and the linker will tell you the number before you ever flash the board.
 
 <details>
-<summary># macOS / Mach-O Addendum: Sections on Apple Silicon</summary>
+# <summary>macOS / Mach-O Addendum: Sections on Apple Silicon</summary>
 
 ## The name mapping
 
