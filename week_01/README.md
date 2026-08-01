@@ -436,8 +436,8 @@ When the compiler emits an object file, it doesn't produce one undifferentiated 
 
 Two questions decide which bucket a thing lands in:
 
-1. **Can it change at runtime?** → writable or read-only
-2. **Are the initial bytes anything other than zero?** → stored in the file, or just a recorded size
+1. **Does it live for the whole program?** → writable or read-only
+2. **Can it change?** → stored in the file, or just a recorded size
 
 That's the whole model:
 
