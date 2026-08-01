@@ -260,6 +260,8 @@ struct WithArr {
 
 **Result:** `sizeof == 20`, `alignof == 4`.
 
+---
+
 # The Four Stages of the GCC Toolchain
 
 When you type `gcc hello.c -o hello`, it looks like one action. It's actually four programs running in sequence, each handing its output to the next:
