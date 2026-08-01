@@ -146,8 +146,6 @@ union U { char c; double d; int i[3]; };
 ```
 </details>
 
----
-
 <details>
 <summary>Struct padding: the three rules</summary>
   
@@ -265,8 +263,6 @@ struct WithArr {
 **Result:** `sizeof == 20`, `alignof == 4`.
 
 </details>
-
----
 
 <details>
 <summary>The Four Stages of the GCC Toolchain</summary>
@@ -433,7 +429,6 @@ gcc -v hello.c -o hello            # show the actual cc1/as/collect2 invocations
 
 </details>
 
----
 <details>
 <summary>Where Your Variables Actually Live: `.text`, `.rodata`, `.data`, `.bss`</summary>
 
@@ -727,8 +722,6 @@ Neither appears in the ELF file, because neither has a compile-time size.
 5. **Out of RAM on a microcontroller?** `.data + .bss` is your static budget, and the linker will tell you the number before you ever flash the board.
 
 </details>
-
----
 
 <details>
 <summary>macOS / Mach-O Addendum: Sections on Apple Silicon</summary>
