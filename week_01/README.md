@@ -719,6 +719,9 @@ Neither appears in the ELF file, because neither has a compile-time size.
 4. **Unexpected segfault writing to a string?** You've got a `char *` pointing at a literal in `.rodata`. Compile with `-Wwrite-strings` to make the compiler warn.
 5. **Out of RAM on a microcontroller?** `.data + .bss` is your static budget, and the linker will tell you the number before you ever flash the board.
 
+<details>
+<summary>macOS / Mach-O Addendum: Sections on Apple Silicon</summary>
+
 ## The name mapping
 
 | Concept | ELF (Linux) | Mach-O (macOS) |
@@ -769,3 +772,4 @@ size -m toolchain.o
 | Dynamic libs | `ldd prog` | `otool -L prog` |
 | Load-time segments | `readelf -lW prog` | `otool -l prog` |
 | Trace linking | `LD_DEBUG=libs ./prog` | `DYLD_PRINT_LIBRARIES=1 ./prog` |
+</details>
