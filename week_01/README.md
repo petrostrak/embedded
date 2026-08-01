@@ -65,8 +65,9 @@
 - [ ] You can explain the `.bss` size answer to someone else without notes.
 
 ---
-
-# Integer promotion and the usual arithmetic conversions.
+<details>
+  <summary>Integer promotion and the usual arithmetic conversions.</summary>
+  
 ### Terminology
 
 | Term | Plain meaning |
@@ -142,6 +143,7 @@ Unions work the same way. Every member starts at offset 0, so the union must sat
 union U { char c; double d; int i[3]; };
 // alignof == 8 (from double), sizeof == 16 (12 bytes rounded up to a multiple of 8)
 ```
+</details>
 
 ---
 
