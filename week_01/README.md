@@ -7,11 +7,11 @@
 - [x] **`sizeof`.** Know what it returns and that its type is `size_t`.
 - [x] **Alignment.** `_Alignof`, natural alignment per type.
 - [x] **Struct padding.** Predict a struct's size before checking it with `sizeof`.
-- [ ] **The four toolchain stages as four separate commands:**
-  - [ ] Preprocess (`gcc -E`)
-  - [ ] Compile to assembly (`gcc -S`)
-  - [ ] Assemble to object file (`gcc -c` / `as`)
-  - [ ] Link (`gcc` / `ld`)
+- [x] **The four toolchain stages as four separate commands:**
+  - [x] Preprocess (`gcc -E`)
+  - [x] Compile to assembly (`gcc -S`)
+  - [x] Assemble to object file (`gcc -c` / `as`)
+  - [x] Link (`gcc` / `ld`)
 - [ ] **Sections.** Know what belongs in `.text`, `.rodata`, `.data`, `.bss` and why.
 
 ## Project — "Where does my variable live?"
@@ -260,3 +260,164 @@ struct WithArr {
 
 **Result:** `sizeof == 20`, `alignof == 4`.
 
+# The Four Stages of the GCC Toolchain
+
+When you type `gcc hello.c -o hello`, it looks like one action. It's actually four programs running in sequence, each handing its output to the next:
+
+```
+hello.c → [preprocessor] → hello.i → [compiler] → hello.s → [assembler] → hello.o → [linker] → hello
+ C source                expanded C            assembly            object file          executable
+```
+
+`gcc` is really a *driver* — a wrapper that decides which tools to run based on the file extension you give it. You can stop it at any stage and inspect the intermediate result.
+
+## The running example
+
+```c
+// hello.c
+#include <stdio.h>
+
+#define GREETING "Hello, world!"
+#define SQUARE(x) ((x) * (x))
+
+int main(void) {
+    printf("%s %d\n", GREETING, SQUARE(4));
+    return 0;
+}
+```
+
+## Stage 1 — Preprocess (`gcc -E`)
+
+```bash
+gcc -E hello.c -o hello.i
+```
+
+The preprocessor is a **text manipulator**. It doesn't understand C at all — it just does find-and-replace on the source before the real compiler sees it.
+
+**What it does**
+
+- Pastes the entire contents of `stdio.h` (and everything *that* includes) in place of the `#include` line
+- Replaces `GREETING` with `"Hello, world!"` and `SQUARE(4)` with `((4) * (4))`
+- Deletes all comments
+- Resolves `#ifdef` / `#if` branches, keeping only the surviving code
+
+The result is still valid C, just much bigger — typically 800+ lines for this tiny file:
+
+```c
+# 1 "hello.c"
+# 1 "/usr/include/stdio.h" 1 3 4
+extern int printf (const char *__restrict __format, ...);
+...
+# 5 "hello.c"
+int main(void) {
+    printf("%s %d\n", "Hello, world!", ((4) * (4)));
+    return 0;
+}
+```
+
+Those `# 5 "hello.c"` line markers are how error messages later can still point back at your original file and line number.
+
+**Why you'd run this manually:** debugging a macro that isn't expanding the way you expect, or finding out which header is actually being picked up.
+
+## Stage 2 — Compile to assembly (`gcc -S`)
+
+```bash
+gcc -S hello.i -o hello.s
+```
+
+This is the real compiler (`cc1` under the hood). It's the only stage that understands C as a *language*: it parses the code, type-checks it, optimizes it, and emits assembly for your target CPU.
+
+```asm
+        .section        .rodata
+.LC0:
+        .string "%s %d\n"
+.LC1:
+        .string "Hello, world!"
+        .text
+        .globl  main
+main:
+        pushq   %rbp
+        movq    %rsp, %rbp
+        movl    $16, %edx          # SQUARE(4) folded to 16 at compile time
+        leaq    .LC1(%rip), %rsi
+        leaq    .LC0(%rip), %rdi
+        movl    $0, %eax
+        call    printf@PLT
+        movl    $0, %eax
+        popq    %rbp
+        ret
+```
+
+Output is still **human-readable text**. Notice `call printf@PLT` — the compiler emits a call to a name it has never seen the body of. Resolving that is somebody else's problem (stage 4).
+
+**Why you'd run this manually:** checking whether the optimizer did what you hoped, or understanding a performance mystery.
+
+## Stage 3 — Assemble to object file (`gcc -c` / `as`)
+
+```bash
+gcc -c hello.s -o hello.o      # via the driver
+as hello.s -o hello.o          # calling the assembler directly
+```
+
+The assembler is a fairly dumb, near-mechanical translator: each assembly mnemonic becomes its binary machine-code encoding. The output is an **ELF relocatable object file** — binary, not text, and not runnable.
+
+The key thing an object file carries beyond raw machine code is a **symbol table**:
+
+```bash
+$ nm hello.o
+0000000000000000 T main      # T = defined here, in the text section
+                 U printf    # U = undefined, someone else must supply it
+```
+
+Addresses inside are placeholders. The file also contains *relocation entries*: notes saying "once you know where `printf` really lives, patch the 4 bytes at offset 0x1f."
+
+**Why you'd run this manually:** this is the normal build unit. Every `.c` in a project compiles to its own `.o`, independently and in parallel. Change one file, recompile one object — that's what make/ninja are built around.
+
+## Stage 4 — Link (`gcc` / `ld`)
+
+```bash
+gcc hello.o -o hello       # correct way
+ld hello.o -o hello        # will fail — see below
+```
+
+The linker takes one or more object files plus libraries, and stitches them into a single executable:
+
+- Merges all `.text`, `.data`, `.rodata` sections together
+- Resolves every `U` symbol against a definition somewhere (`printf` → libc)
+- Applies relocations, patching in the now-known addresses
+- Writes the program entry point and the loader metadata
+
+Calling `ld` directly fails with something like `undefined reference to '_start'`, because your program doesn't actually start at `main`. It starts at `_start` in the C runtime startup files (`crt1.o`, `crti.o`, `crtn.o`), which sets up the stack, runs global constructors, calls `main`, then calls `exit()` with your return value. `gcc` knows to pass all of that to `ld`; bare `ld` doesn't.
+
+
+## Summary table
+
+| Stage | Command | Input | Output | Text or binary? |
+|---|---|---|---|---|
+| Preprocess | `gcc -E` | `.c` | `.i` | text (still C) |
+| Compile | `gcc -S` | `.i` | `.s` | text (assembly) |
+| Assemble | `gcc -c` | `.s` | `.o` | binary (relocatable) |
+| Link | `gcc` | `.o` | executable | binary (runnable) |
+
+
+## Which stage broke?
+
+Error messages tell you where you are, which makes this genuinely useful knowledge:
+
+| Error message | Stage | Usual fix |
+|---|---|---|
+| `fatal error: foo.h: No such file or directory` | Preprocessor | Fix your `-I` include paths |
+| `error: expected ';' before ...`, `incompatible types` | Compiler | Fix the C |
+| `Error: no such instruction` | Assembler | Bad inline asm, or wrong `-march` |
+| `undefined reference to 'sqrt'` | Linker | Missing library (`-lm`) or object file |
+| `multiple definition of 'x'` | Linker | Symbol defined in two translation units |
+
+
+## Handy shortcuts
+
+```bash
+gcc -save-temps hello.c -o hello   # build normally, but keep .i, .s, .o
+gcc -v hello.c -o hello            # show the actual cc1/as/collect2 invocations
+```
+
+**C++:** substitute `g++`; the preprocessed extension is `.ii` and the compiler proper is `cc1plus`. The rest of the pipeline is identical.
