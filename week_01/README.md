@@ -428,12 +428,12 @@ Two questions decide which bucket a thing lands in:
 
 That's the whole model:
 
-| Section | Writable? | Executable? | Bytes stored in the file? |
-|---|---|---|---|
-| `.text` | no | **yes** | yes |
-| `.rodata` | no | no | yes |
-| `.data` | **yes** | no | yes |
-| `.bss` | **yes** | no | **no** — size only |
+| Section | Writable? | Executable? | Bytes stored in the file? | Example |
+|---|---|---|---|---|
+| `.text` | no | **yes** | yes | executable code |
+| `.rodata` | no | no | yes | const, string literals |
+| `.data` | **yes** | no | yes | global, static |
+| `.bss` | **yes** | no | **no** — size only | size only, no bytes stored |
 
 Everything below is a consequence of that table.
 
