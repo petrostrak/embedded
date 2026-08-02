@@ -190,8 +190,8 @@ Think of it as **units cancelling**, like in physics:
 
 | Operation | Types |
 |---|---|
-| Addition | `pointer + count → pointer` |
-| Subtraction | `pointer − pointer → count` |
+| Addition | `pointer + integer → pointer` |
+| Subtraction | `pointer − pointer → integer` |
 
 The `sizeof(T)` factor is baked into the pointer type on both operands, so it divides out. Getting `n * sizeof(T)` back would be a broken round trip: `p + (q - p)` would no longer equal `q`.
 
