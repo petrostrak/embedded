@@ -39,16 +39,17 @@
 s
 ### The array experiment
 
-- [x] Add a 1000-element zero-initialised array to `mem.c`.
+- [x] Add a 1000-element zero-initialized array to `mem.c`.
 - [x] Re-run `size -A mem.o` and record the before/after numbers.
 - [x] Explain why the object file did **not** grow by 4 kB.
 * `.bss` has `NOBITS` type. It's not storing 4096 zero-bytes in the file, it's storing a single instruction: "reserve 4096 bytes and zero them at load time."
-- [x] Follow-up: change the array to be initialised with non-zero values and re-run `size`. Explain the difference.
+- [x] Follow-up: change the array to be initialized with non-zero values and re-run `size`. Explain the difference.
+* If we initialize with non-zero values `int arr[1024] = {1,2,3,...};`, the 4096 bytes will be written in `.data`.
 
 ## Done when
 
-- [ ] You can predict which section a declaration lands in before compiling it.
-- [ ] You can explain the `.bss` size answer to someone else without notes.
+- [x] You can predict which section a declaration lands in before compiling it.
+- [x] You can explain the `.bss` size answer to someone else without notes.
 
 ---
 
