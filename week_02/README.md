@@ -2,9 +2,9 @@
 
 ## Concepts
 
-- [ ] **Pointer arithmetic.** `p + 1` advances by `sizeof(*p)`, not by 1 byte. Know why `&arr[n] - &arr[0]` is `n` and not `n * sizeof(T)`.
-  - [ ] Pointer difference has type `ptrdiff_t`.
-  - [ ] One-past-the-end is legal to *form* and compare, illegal to dereference.
+- [x] **Pointer arithmetic.** `p + 1` advances by `sizeof(*p)`, not by 1 byte. Know why `&arr[n] - &arr[0]` is `n` and not `n * sizeof(T)`.
+  - [x] Pointer difference has type `ptrdiff_t`.
+  - [x] One-past-the-end is legal to *form* and compare, illegal to dereference.
 - [ ] **Arrays are not pointers, but decay to them.** `sizeof` on an array gives the array size; on a decayed parameter it gives the pointer size.
   - [ ] `void f(int a[10])` is really `void f(int *a)` — the `10` is documentation, nothing more.
   - [ ] Write out explicitly what a Go slice carries that a `T*` does not (length, capacity, bounds checks, GC-tracked ownership).
