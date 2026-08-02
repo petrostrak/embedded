@@ -112,7 +112,7 @@ Build the C equivalent of a Go interface and feel the difference.
 ---
 <details>
 <summary>Pointer arithmetics</summary>
-## The core idea: pointers are typed, and arithmetic respects the type
+The core idea: pointers are typed, and arithmetic respects the type
 
 When you write `p + 1`, C doesn't mean "the next byte." It means "the next object of whatever type `p` points to." The compiler silently multiplies by `sizeof(*p)` for you.
 
