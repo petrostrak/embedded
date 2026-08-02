@@ -36,28 +36,14 @@
 - [x] `nm mem.o` — symbol table and section letters
 - [x] `objdump -h mem.o` — section headers
 - [x] `readelf -S mem.o` — section headers with flags
-
-### Write it up
-
-- [ ] One line per symbol: which section it landed in, and **why**.
-
-| Symbol | Section | Why |
-|---|---|---|
-| global initialised | | |
-| global uninitialised | | |
-| `static` local | | |
-| `const` global | | |
-| string literal | | |
-| stack local | | |
-
-- [ ] Cross-check: does the stack local appear in `nm` output at all? Explain the result either way.
-
+s
 ### The array experiment
 
-- [ ] Add a 1000-element zero-initialised array to `mem.c`.
-- [ ] Re-run `size -A mem.o` and record the before/after numbers.
-- [ ] Explain why the object file did **not** grow by 4 kB.
-- [ ] Follow-up: change the array to be initialised with non-zero values and re-run `size`. Explain the difference.
+- [x] Add a 1000-element zero-initialised array to `mem.c`.
+- [x] Re-run `size -A mem.o` and record the before/after numbers.
+- [x] Explain why the object file did **not** grow by 4 kB.
+* `.bss` has `NOBITS` type. It's not storing 4096 zero-bytes in the file, it's storing a single instruction: "reserve 4096 bytes and zero them at load time."
+- [x] Follow-up: change the array to be initialised with non-zero values and re-run `size`. Explain the difference.
 
 ## Done when
 
