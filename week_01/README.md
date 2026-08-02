@@ -12,30 +12,30 @@
   - [x] Compile to assembly (`gcc -S`)
   - [x] Assemble to object file (`gcc -c` / `as`)
   - [x] Link (`gcc` / `ld`)
-- [ ] **Sections.** Know what belongs in `.text`, `.rodata`, `.data`, `.bss` and why.
+- [x] **Sections.** Know what belongs in `.text`, `.rodata`, `.data`, `.bss` and why.
 
 ## Project — "Where does my variable live?"
 
 ### Setup
 
-- [ ] Create `mem.c` with one of each storage case:
-  - [ ] A global **initialised** variable
-  - [ ] A global **uninitialised** variable
-  - [ ] A `static` local
-  - [ ] A `const` global
-  - [ ] A string literal
-  - [ ] A stack local
+- [x] Create `mem.c` with one of each storage case:
+  - [x] A global **initialised** variable
+  - [x] A global **uninitialised** variable
+  - [x] A `static` local
+  - [x] A `const` global
+  - [x] A string literal
+  - [x] A stack local
 
 ### Build and inspect
 
-- [ ] Compile:
+- [x] Compile:
   ```
   gcc -c -Wall -Wextra -Werror -Wconversion -std=c11 mem.c -o mem.o
   ```
-- [ ] `size -A mem.o` — per-section sizes
-- [ ] `nm mem.o` — symbol table and section letters
-- [ ] `objdump -h mem.o` — section headers
-- [ ] `readelf -S mem.o` — section headers with flags
+- [x] `size -A mem.o` — per-section sizes
+- [x] `nm mem.o` — symbol table and section letters
+- [x] `objdump -h mem.o` — section headers
+- [x] `readelf -S mem.o` — section headers with flags
 
 ### Write it up
 
