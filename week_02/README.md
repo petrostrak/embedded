@@ -787,8 +787,6 @@ Two separate defects in the second version:
 
 The asymmetry is deliberate. Reading bytes out of a typed object is an inspection that can't confuse the optimizer's model. Imposing a rich type onto storage the compiler believes is bytes can, and does.
 
----
-
 ## The `malloc` distinction
 
 Here's the part that reconciles §8 with everyday C, where casting allocated memory to a struct pointer is completely normal.
@@ -809,8 +807,6 @@ That is why:
 | `union { struct T t; unsigned char b[sizeof(struct T)]; } u` | Yes — see below |
 
 If you need a typed view of a stack buffer, the buffer should be declared as a union, or declared as the target type in the first place.
-
----
 
 ## Type punning, correctly
 
@@ -884,8 +880,6 @@ So:
 - **Never** serialize a struct by writing its bytes to a file or socket. Padding, endianness, and member sizes are all implementation-dependent. Serialize field by field.
 
 Reading padding bytes is legal (they're just bytes); *relying* on their values is not.
-
----
 
 ## `-fno-strict-aliasing`
 
