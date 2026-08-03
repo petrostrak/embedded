@@ -706,6 +706,7 @@ Note `data` is `unsigned char *`, not `void *` — precisely so the arithmetic i
 `void *` deletes the compiler's ability to check you. Pass the wrong element size, cast to the wrong type, mismatch a callback signature, and you get no diagnostic — just corruption at runtime. Every `void *` in an interface is a small hand-written contract that the compiler will not enforce. Keep them at boundaries and convert back to real types immediately.
 
 ## Summary
+
 | | |
 |---|---|
 | Converts implicitly to/from any **object** pointer | yes, both directions, in C |
@@ -719,4 +720,198 @@ Note `data` is `unsigned char *`, not `void *` — precisely so the arithmetic i
 ### Rules of thumb
 
 1. Let `void *` exist only at API boundaries; convert back to a real type on the first line of the callee.
+</details>
+
+<details>
+<summary></summary>
+`char *` aliasing
+
+## The strict aliasing rule, briefly
+
+C restricts which *lvalue type* you may use to access a given object. Roughly (C11 6.5p7), you may access an object through:
+
+- its own type, or a qualified version of it (`const`/`volatile`)
+- the signed or unsigned counterpart of its type
+- an aggregate or union type containing one of the above
+- **a character type**
+
+Anything else is undefined behaviour. This isn't pedantry for its own sake — it's what lets the optimizer assume that a write through an `int *` cannot disturb a `float` it has cached in a register.
+
+The last bullet is the escape hatch.
+
+## The exception: any object may be read as bytes
+
+```c
+double d = 3.14;
+unsigned char *b = (unsigned char *)&d;
+
+for (size_t i = 0; i < sizeof d; i++)
+    printf("%02x ", b[i]);      // completely legal
+```
+
+This works for *any* object of *any* type. It is the licence that makes `memcpy`, `memcmp`, `memset`, hashing, serialization, checksums, and hex dumps expressible in C at all.
+
+### Prefer `unsigned char`
+
+All three character types are on the allowed list, but `unsigned char` is the right choice for byte inspection:
+
+- **Plain `char` may be signed.** Byte values above 127 become negative. That breaks comparisons, right-shifts (implementation-defined for negative values), and array indexing (`table[c]` with negative `c` reads out of bounds — a real bug in naïve `<ctype.h>` and UTF-8 code).
+- **`unsigned char` has no padding bits and no trap representations.** Every bit pattern is a valid value, so reading raw bytes through it can never produce something the implementation considers invalid.
+
+Use `signed char` when you mean "small signed integer", `char` when you mean "text character", and `unsigned char` when you mean "byte". They are three distinct types, and `char` is not a typedef for either of the others.
+
+### A note on `uint8_t`
+
+In practice `uint8_t` is a typedef for `unsigned char`, and therefore inherits the exception. But the standard does not *require* that — it could in principle be an extended integer type, which would not be a character type and would not get the licence. On any platform you're likely to meet, this is a non-issue; in maximally portable code, `unsigned char` is the type with the guarantee attached.
+
+## Why the reverse does not hold
+
+The rule is written in terms of *the object being accessed* and *the lvalue used to access it*. "Character type" is on the list of permitted lvalues **for every object**. But no corresponding entry makes arbitrary types permitted lvalues **for a character object**.
+
+So this is fine:
+
+```c
+struct point pt = { 1, 2 };
+unsigned char *b = (unsigned char *)&pt;    // OK: reading a struct as bytes
+```
+
+...and this is not:
+
+```c
+unsigned char buf[sizeof(struct point)];
+struct point *p = (struct point *)buf;      // formally UB
+p->x = 1;                                   // accessing char objects via struct lvalue
+```
+
+Two separate defects in the second version:
+
+1. **Aliasing.** The declared type of `buf` is `unsigned char[N]`; `struct point` is not an allowed access type for it.
+2. **Alignment.** `unsigned char[N]` has alignment 1. The address may not satisfy `_Alignof(struct point)`, which is UB independently of aliasing.
+
+The asymmetry is deliberate. Reading bytes out of a typed object is an inspection that can't confuse the optimizer's model. Imposing a rich type onto storage the compiler believes is bytes can, and does.
+
+---
+
+## The `malloc` distinction
+
+Here's the part that reconciles §8 with everyday C, where casting allocated memory to a struct pointer is completely normal.
+
+An object declared with a type has that as its **effective type**, permanently. Memory returned by `malloc` has **no declared type**. Its effective type is whatever type was used for the most recent store into it.
+
+```c
+struct point *p = malloc(sizeof *p);   // no declared type
+p->x = 1;                              // effective type becomes struct point. Fine.
+```
+
+That is why:
+
+| Storage | Reinterpret as `struct T`? |
+|---|---|
+| `malloc(sizeof(struct T))` | Yes — allocated memory has no declared type, and `malloc` returns suitably aligned memory |
+| `unsigned char buf[sizeof(struct T)]` | No — declared type is `unsigned char[]`; also alignment 1 |
+| `union { struct T t; unsigned char b[sizeof(struct T)]; } u` | Yes — see below |
+
+If you need a typed view of a stack buffer, the buffer should be declared as a union, or declared as the target type in the first place.
+
+---
+
+## Type punning, correctly
+
+### Use `memcpy`
+
+The portable, always-correct way to reinterpret a value's bits:
+
+```c
+float f = 1.0f;
+uint32_t bits;
+memcpy(&bits, &f, sizeof bits);      // 0x3f800000
+```
+
+This is legal because `memcpy` operates on bytes, and both directions of byte access are permitted. It reads `f` as bytes (allowed by the exception) and writes into `bits`, whose declared type then governs how you read it.
+
+**This is not slow.** Every mainstream compiler recognizes a small fixed-size `memcpy` and emits a single load/store, or nothing at all if the value is already in the right register class. `memcpy` is the idiomatic type-pun in modern C, not a fallback.
+
+The thing it replaces:
+
+```c
+uint32_t bits = *(uint32_t *)&f;     // strict-aliasing violation
+```
+
+This is not a theoretical concern. At `-O2`, GCC and Clang will reorder or elide stores around such a cast and produce wrong output. It's one of the most common sources of "works at `-O0`, breaks at `-O2`".
+
+### Or use a union
+
+Unlike C++, C explicitly permits reading a union member other than the one last written; the bytes are reinterpreted in the new member's type.
+
+```c
+union fbits { float f; uint32_t u; };
+
+union fbits x = { .f = 1.0f };
+printf("%08x\n", x.u);               // well-defined in C
+```
+
+The union also solves the alignment problem, which makes it the tool for typed views of stack storage:
+
+```c
+union buf {
+    struct point p;
+    unsigned char bytes[sizeof(struct point)];
+};
+
+union buf b;
+recv_bytes(b.bytes, sizeof b.bytes);
+use(&b.p);                           // aligned, and legal
+```
+
+The caveats are that the result may be a trap representation for some types, and that reading a member wider than the one written exposes unspecified bytes.
+
+## Padding, and why `memcmp` on structs lies
+
+Structs may contain padding bytes between members and at the end. Their contents are **unspecified** — copying, assigning, or partially initializing a struct says nothing about what lands in the padding.
+
+```c
+struct s { char c; int i; };         // typically 3 bytes of padding after c
+
+struct s a = { 'x', 1 };
+struct s b;
+b.c = 'x';
+b.i = 1;
+
+memcmp(&a, &b, sizeof a);            // may be nonzero! padding differs
+```
+
+So:
+
+- **Never** use `memcmp` to test structs for equality. Compare members.
+- **Never** hash a struct by hashing its bytes, unless you've cleared it with `memset` first *and* you're certain nothing has re-touched the padding.
+- **Never** serialize a struct by writing its bytes to a file or socket. Padding, endianness, and member sizes are all implementation-dependent. Serialize field by field.
+
+Reading padding bytes is legal (they're just bytes); *relying* on their values is not.
+
+---
+
+## `-fno-strict-aliasing`
+
+GCC and Clang accept `-fno-strict-aliasing`, which tells the optimizer to assume any pointer may alias any other. The Linux kernel builds with it, as do several older codebases with too much punning to audit.
+
+It is a real, useful escape valve for legacy code, and it costs some optimization. But it is a *compiler* promise, not a *language* one — code that depends on it is not portable C, and the next compiler or the next `-O` level may not oblige. For new code, `memcpy` costs nothing and needs no flag.
+
+## Summary
+
+| | |
+|---|---|
+| Read/write any object's bytes via `char`/`signed char`/`unsigned char` | legal, always |
+| Read a `char` array as some other type | UB (aliasing) plus likely UB (alignment) |
+| `malloc`'d memory as any type | legal — no declared type, suitably aligned |
+| Best type for byte access | `unsigned char` |
+| Portable type punning | `memcpy` — free at `-O2` |
+| Union punning | legal in C (unlike C++) |
+| `memcmp` / hashing / serializing structs by bytes | broken: padding is unspecified |
+
+### Rules of thumb
+
+1. For byte arithmetic, hold the pointer as `unsigned char *`, not `void *`.
+2. To reinterpret bits, reach for `memcpy` first and a union second. Never `*(T *)&x`.
+3. To get typed storage, use `malloc` or a union — not a cast onto a `char` array.
+4. Compare and serialize structs field by field.
 </details>
