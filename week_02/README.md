@@ -723,8 +723,7 @@ Note `data` is `unsigned char *`, not `void *` — precisely so the arithmetic i
 </details>
 
 <details>
-<summary></summary>
-`char *` aliasing
+<summary>char * aliasing</summary>
 
 ## The strict aliasing rule, briefly
 
