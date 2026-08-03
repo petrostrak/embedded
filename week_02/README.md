@@ -169,8 +169,6 @@ bytes += 3;                /* 3 actual bytes, into the middle of arr[0] */
 
 > **Note:** `void *` arithmetic is *not* standard C. GCC/Clang allow it as an extension treating `sizeof(void)` as 1, but `-pedantic` will complain, and MSVC rejects it.
 
----
-
 ## Why `&arr[n] - &arr[0]` is `n`, not `n * sizeof(T)`
 
 Subtraction is defined as the inverse of addition, so it has to un-scale. The rule in the standard is essentially: **if `q == p + n`, then `q - p == n`.** Nothing else would be self-consistent.
@@ -209,8 +207,6 @@ ptrdiff_t n = &arr[5] - &arr[0];   /* 5, not 20 */
 - **Both operands must point into the same array object** (or one past its end). Subtracting `&x - &y` for two unrelated variables is undefined behavior, even though it'll "work" and give you some number on flat-memory machines. The standard doesn't guarantee unrelated objects live in one comparable address space.
 - **The pointed-to type must be complete.** You can't do arithmetic on `struct Foo *` if `Foo` is only forward-declared, since the compiler doesn't know the stride.
 
----
-
 ## `ptrdiff_t`
 
 The result type of pointer subtraction is `ptrdiff_t`, declared in `<stddef.h>`. It is:
@@ -246,8 +242,6 @@ if (d < (ptrdiff_t)sizeof(int))     /* TRUE — compare like with like */
 Turn on `-Wsign-compare` (included in `-Wall` for C) and the compiler will flag these.
 
 > **Pedantic corner:** `ptrdiff_t` is only guaranteed wide enough for differences within a single array. On a 32-bit system with a `char` array larger than `PTRDIFF_MAX`, the difference technically overflows into UB. You'll basically never hit this, but it explains why the standard hedges rather than promising the type is always big enough.
-
----
 
 ## One-past-the-end
 
@@ -318,8 +312,6 @@ printf("%td\n", e - p);   /* 1 */
 
 - Pointer comparison with `<`, `>`, `<=`, `>=` is only defined within one array object (plus its one-past-end); comparing unrelated pointers that way is UB. `==` and `!=` are always fine.
 - If `sizeof(T)` happens to make two different objects' addresses coincide — e.g. `&arr1[n]` equalling `&arr2[0]` when they're adjacent in memory — the comparison may compare equal, but that doesn't make the one-past pointer usable as a pointer *into* the second array.
-
----
 
 ## Quick summary
 
