@@ -5,9 +5,8 @@
 - [x] **Pointer arithmetic.** `p + 1` advances by `sizeof(*p)`, not by 1 byte. Know why `&arr[n] - &arr[0]` is `n` and not `n * sizeof(T)`.
   - [x] Pointer difference has type `ptrdiff_t`.
   - [x] One-past-the-end is legal to *form* and compare, illegal to dereference.
-- [ ] **Arrays are not pointers, but decay to them.** `sizeof` on an array gives the array size; on a decayed parameter it gives the pointer size.
-  - [ ] `void f(int a[10])` is really `void f(int *a)` — the `10` is documentation, nothing more.
-  - [ ] Write out explicitly what a Go slice carries that a `T*` does not (length, capacity, bounds checks, GC-tracked ownership).
+- [x] **Arrays are not pointers, but decay to them.** `sizeof` on an array gives the array size; on a decayed parameter it gives the pointer size.
+  - [x] `void f(int a[10])` is really `void f(int *a)` — the `10` is documentation, nothing more.
 - [ ] **`void*` for generic code.** Implicit conversion to and from any object pointer; cannot be dereferenced or arithmetic'd (portably).
 - [ ] **`char*` aliasing.** Any object may legally be inspected byte-by-byte through `char*`/`unsigned char*`; the reverse is not generally true.
 - [ ] **Function pointers.**
@@ -328,4 +327,176 @@ printf("%td\n", e - p);   /* 1 */
 | `arr - 1` | one before start | **UB** |
 | `&x + 1` for scalar `x` | treated as array of length 1 | yes |
 | `&a - &b` for unrelated objects | — | **UB** |
+</details>
+<details>
+<summary>Arrays Are Not Pointers (But They Decay Into Them)</summary>
+
+## An array is not a pointer — it's a block
+
+```c
+int arr[10];   // 40 bytes of ints. Type: "array of 10 int"
+int *p;        // 8 bytes holding an address. Type: "pointer to int"
+```
+
+When you write `int arr[10];`, the compiler sets aside 40 bytes (assuming 4-byte ints) and gives the name `arr` the type *array of 10 int*. **There is no pointer variable anywhere.** Nothing in memory holds the address of the first element — the address is simply where the block happens to live.
+
+Contrast with `int *p;`, which allocates one pointer-sized object (8 bytes on a typical 64-bit machine) whose *contents* are an address.
+
+So `int[10]` and `int *` are genuinely different types, with different sizes and different memory layouts.
+
+```
+arr:  [ i0 ][ i1 ][ i2 ] ... [ i9 ]        40 bytes, no indirection
+p:    [ 0x7ffd...      ]  ──────────►      8 bytes, points elsewhere
+```
+
+## Decay: the implicit conversion
+
+The confusion exists because of one rule: **almost anywhere an array appears in an expression, it is implicitly converted to a pointer to its first element.** That conversion is called *decay*.
+
+```c
+int arr[10];
+int *p = arr;        // arr decays to &arr[0]
+foo(arr);            // decays
+arr[3];              // really *(arr + 3), so arr decays here too
+```
+
+### Where decay does *not* happen
+
+| Context | Example | Result |
+|---|---|---|
+| Operand of `sizeof` | `sizeof arr` | `40`, not `8` |
+| Operand of `_Alignof` | `_Alignof(int[10])` | alignment of `int` |
+| Operand of unary `&` | `&arr` | type `int (*)[10]` |
+| String literal init'ing a char array | `char s[] = "hi";` | copies characters, no pointer stored |
+| `typeof` (C23) | `typeof(arr)` | `int[10]` |
+
+That short exception list is the whole story. Everything else about `sizeof` and function parameters follows from it.
+
+## `sizeof` — array vs. decayed pointer
+
+Because `sizeof` is one of the exceptions, it sees the *real* array type:
+
+```c
+int arr[10];
+sizeof arr;      // 40  — the whole block
+sizeof arr[0];   // 4   — one element
+
+int *p = arr;
+sizeof p;        // 8   — the size of the ADDRESS, not the target
+sizeof *p;       // 4   — one element
+```
+
+Hence the classic length idiom, which **works only on a real array**:
+
+```c
+size_t n = sizeof arr / sizeof arr[0];   // 10
+```
+
+### The `&arr` subtlety
+
+```c
+&arr[0]   // type int *          — arithmetic steps 4 bytes
+&arr      // type int (*)[10]    — arithmetic steps 40 bytes
+```
+
+Both hold the same numeric address. Their *types* differ, so pointer arithmetic on them advances by different amounts.
+
+## The function parameter rule
+
+C has a separate rule for parameters: **any parameter declared as "array of T" is adjusted by the compiler to "pointer to T".** This isn't decay at the call site — it's a rewrite of the declaration itself.
+
+All three declare *exactly the same function*:
+
+```c
+void f(int a[10]);
+void f(int a[]);
+void f(int *a);
+```
+
+The `10` is discarded entirely:
+
+- it is **not** checked against the caller
+- it does **not** affect `sizeof a` inside the body (which gives `8`)
+- passing an array of 3 elements is legal as far as the type system is concerned
+
+> **The `10` is documentation for human readers. Nothing more.**
+
+This is also why **arrays cannot be passed by value in C**: there is no way to write a parameter whose type is an array. The workaround is to wrap the array in a `struct`, which *is* copied by value.
+
+## 5. The trap
+
+```c
+void f(int a[10]) {
+    size_t n = sizeof a / sizeof a[0];   // 8 / 4 == 2.  WRONG, silently.
+}
+```
+
+No warning by default on many compilers. The idiom that works outside the function fails inside it, because `a` is a pointer here.
+
+### Fix 1 — pass the length (conventional)
+
+```c
+void f(int *a, size_t n);
+
+f(arr, sizeof arr / sizeof arr[0]);   // compute length where arr is still an array
+```
+
+### Fix 2 — pointer to array (strict; keeps size in the type)
+
+```c
+void f(int (*a)[10]) {
+    size_t n = sizeof *a / sizeof (*a)[0];   // 10, correct
+    (*a)[0] = 1;                             // or a[0][0]
+}
+
+f(&arr);    // caller must pass &arr
+            // wrong-sized arrays are now a compile-time type error
+```
+
+### Fix 3 — `static` in the parameter (C99, advisory)
+
+```c
+void f(int a[static 10]);   // "caller promises at least 10 elements"
+```
+
+Still a pointer parameter, still `sizeof a == 8`. But compilers may use it for warnings and optimization, and it documents a contract the compiler partly understands.
+
+## Multidimensional arrays
+
+Decay peels off **only the outermost dimension**.
+
+`int m[3][4]` is *an array of 3 things, each of which is `int[4]`*. So it decays to `int (*)[4]` — **not** `int **`. There is no array of pointers involved anywhere; the 12 ints are one contiguous block.
+
+```c
+void g(int m[3][4]);      // becomes  void g(int (*m)[4]);
+```
+
+- The leading `3` is dropped, as always.
+- The `4` is **load-bearing** — it's part of the pointer's target type, and the compiler needs it to compute the address of `m[i][j]`. Drop it and the code won't compile.
+
+```c
+int m[3][4];
+sizeof m;        // 48  — whole block
+sizeof m[0];     // 16  — one row
+sizeof m[0][0];  // 4   — one element
+m;               // decays to int (*)[4]
+```
+
+## Summary
+
+| Thing | Type | `sizeof` |
+|---|---|---|
+| `int arr[10]` | `int[10]` | 40 |
+| `arr` in most expressions | `int *` (decayed) | — |
+| `&arr` | `int (*)[10]` | 8 |
+| `int *p` | `int *` | 8 |
+| `int a[10]` as a parameter | `int *` | 8 |
+| `int m[3][4]` | `int[3][4]` | 48 |
+| `m` in most expressions | `int (*)[4]` | — |
+
+**Rules of thumb**
+
+1. Compute array lengths only where the array is still an array — never inside a function that received it as a parameter.
+2. If a function takes an array, it takes a pointer. Pass the length alongside it, or take `T (*)[N]` if the size is genuinely fixed.
+3. `int **` is never the decayed form of a 2D array.
 </details>
