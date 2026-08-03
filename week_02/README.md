@@ -630,8 +630,6 @@ uint32_t *p = (uint32_t *)(raw + 1);   // misaligned. UB on dereference.
 
 Generic code that carves objects out of a byte buffer has to do the alignment arithmetic itself. `_Alignof` / `alignof`, `_Alignas` / `alignas`, and `aligned_alloc` are the tools. Memory from `malloc` is aligned for any object type with a fundamental alignment, so it's the easy path.
 
----
-
 ## `void *` in practice
 
 ### Callbacks with a context pointer
