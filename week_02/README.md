@@ -704,4 +704,19 @@ Note `data` is `unsigned char *`, not `void *` — precisely so the arithmetic i
 ### The cost
 
 `void *` deletes the compiler's ability to check you. Pass the wrong element size, cast to the wrong type, mismatch a callback signature, and you get no diagnostic — just corruption at runtime. Every `void *` in an interface is a small hand-written contract that the compiler will not enforce. Keep them at boundaries and convert back to real types immediately.
+
+## Summary
+| | |
+|---|---|
+| Converts implicitly to/from any **object** pointer | yes, both directions, in C |
+| Converts to/from **function** pointers | not per the standard; POSIX requires it |
+| `const void *` → `void *` | needs a cast |
+| `void **` as a generic pointer-to-pointer | no such thing |
+| `*v`, `v + 1`, `v - w`, `sizeof(void)` | all invalid; GCC/Clang allow arithmetic as an extension |
+| Alignment | not tracked; misaligned conversion back is UB |
+| Type safety | none — the compiler cannot help you |
+
+### Rules of thumb
+
+1. Let `void *` exist only at API boundaries; convert back to a real type on the first line of the callee.
 </details>
