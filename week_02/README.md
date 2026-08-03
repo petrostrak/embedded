@@ -500,3 +500,208 @@ m;               // decays to int (*)[4]
 2. If a function takes an array, it takes a pointer. Pass the length alongside it, or take `T (*)[N]` if the size is genuinely fixed.
 3. `int **` is never the decayed form of a 2D array.
 </details>
+
+<details>
+<summary>`void *` for generic code</summary>
+
+## What `void *` actually is
+
+`void` is an *incomplete type that can never be completed*. It has no size and no values. `void *` is a pointer to that nothing.
+
+This is not a trick or a special case bolted on — the two properties that make `void *` useful and the two that make it awkward both fall out of that one fact:
+
+| Because `void` has no size... | Consequence |
+|---|---|
+| there's no representation to commit to | it can hold *any* object address |
+| there's nothing to produce when you follow it | you can't dereference it |
+| there's no stride to step by | you can't do arithmetic on it |
+| there's nothing to measure | `sizeof(void)` is invalid |
+
+`void *` is an address with the type information deliberately stripped off.
+
+## Implicit conversion, both directions
+
+In C — unlike C++ — `void *` converts implicitly to and from any **object** pointer type. No cast needed, in either direction.
+
+```c
+int   i = 42;
+void *v = &i;          // int*  -> void*   implicit, fine
+int  *p = v;           // void* -> int*    implicit, ALSO fine in C
+
+char *buf = malloc(n); // void* -> char*   this is why malloc "just works"
+```
+
+### Don't cast `malloc`
+
+```c
+int *p = malloc(n * sizeof *p);          // idiomatic C
+int *p = (int *)malloc(n * sizeof *p);   // noise; C++ habit
+```
+
+The cast is not merely redundant. Historically, if you forgot `#include <stdlib.h>`, the cast would silence the diagnostic about the implicitly-declared `malloc` returning `int`, turning a caught bug into a silent one. In C99 and later, implicit declarations are gone, but the habit is still worth keeping.
+
+### The round-trip guarantee
+
+Converting `T * → void * → T *` gives you back a pointer that compares equal to the original and is usable. The standard guarantees this. So `void *` is a safe *transport* type: you can hand a pointer through a generic layer and get it back intact.
+
+What you get back is only guaranteed good if you convert it back to **the type it came from**. `void *` doesn't remember; you have to.
+
+## What `void *` does *not* cover
+
+### Function pointers
+
+```c
+void (*fn)(void);
+void *v = fn;         // NOT guaranteed by the C standard
+```
+
+Object pointers and function pointers are separate universes in C. The standard says nothing about converting between them, and on exotic architectures (Harvard-style, segmented, wide code pointers) they genuinely differ.
+
+POSIX requires the conversion to work, because `dlsym` returns `void *` and there'd be no way to use it otherwise. That's the origin of this notorious workaround:
+
+```c
+void (*fn)(void);
+*(void **)&fn = dlsym(handle, "my_function");   // POSIX-blessed ugliness
+```
+
+If you're writing portable C, keep function pointers in function pointer types. Cast between *different* function pointer types if you must (that round-trips fine), but don't route them through `void *`.
+
+### `const` qualification
+
+`void *` loses const, so the conversion that would discard it is not implicit:
+
+```c
+const int *ci = &i;
+const void *cv = ci;    // fine
+void *v = cv;           // error: discards const, needs a cast
+```
+
+Generic read-only APIs take `const void *` (see `memcmp`, `qsort`'s comparator). Generic write APIs take `void *`.
+
+### `void **` is not generic
+
+`void *` is a generic pointer *to an object*. `void **` is a specific pointer to a `void *` object — it is **not** a generic pointer-to-pointer.
+
+```c
+int *p;
+void **pp = &p;    // error: int** and void** are not compatible
+```
+
+This trips people writing "generic allocator" APIs of the shape `int alloc_thing(void **out)`. Callers must pass a real `void *` variable, or you accept the cast and the formal aliasing violation that goes with it.
+
+## No dereference, no arithmetic
+
+```c
+void *v = buf;
+
+*v;        // error: dereferencing pointer to incomplete type
+v[3];      // error: same thing, v[3] is *(v + 3)
+v + 1;     // error in standard C: how many bytes is "1"?
+v - w;     // error: same problem
+```
+
+The fix is to say what stride you mean:
+
+```c
+unsigned char *b = v;
+b + 1;                          // unambiguously 1 byte
+(unsigned char *)v + offset;    // one-off
+```
+
+### The GCC/Clang extension
+
+GCC and Clang treat `void *` arithmetic as `char *` arithmetic — stride 1 — as a documented extension. It compiles silently by default.
+
+```
+-Wpointer-arith    warn about it
+-pedantic          diagnose it
+```
+
+Relying on it is a portability hazard, and it's genuinely ambiguous to readers who don't know which dialect they're in. Cast explicitly.
+
+### Alignment: the quiet trap
+
+`void *` carries no alignment information. Converting a `void *` back to `T *` when the address isn't suitably aligned for `T` is **undefined behaviour** — not merely slow, and not merely a problem on old hardware (it breaks SSE/NEON loads on current CPUs).
+
+```c
+unsigned char raw[64];
+uint32_t *p = (uint32_t *)(raw + 1);   // misaligned. UB on dereference.
+```
+
+Generic code that carves objects out of a byte buffer has to do the alignment arithmetic itself. `_Alignof` / `alignof`, `_Alignas` / `alignas`, and `aligned_alloc` are the tools. Memory from `malloc` is aligned for any object type with a fundamental alignment, so it's the easy path.
+
+---
+
+## `void *` in practice
+
+### Callbacks with a context pointer
+
+The standard shape for "call my function later and give it back my data":
+
+```c
+void for_each(int *a, size_t n, void (*fn)(int, void *), void *ctx)
+{
+    for (size_t i = 0; i < n; i++)
+        fn(a[i], ctx);
+}
+
+struct total { long sum; };
+
+static void add(int x, void *ctx)
+{
+    struct total *t = ctx;      // implicit conversion back
+    t->sum += x;
+}
+
+struct total t = {0};
+for_each(arr, n, add, &t);
+```
+
+`for_each` never knows what `ctx` is. It only promises to pass it through untouched. That's the whole idea.
+
+### `qsort` — and its classic bug
+
+```c
+int cmp_int(const void *a, const void *b)
+{
+    int x = *(const int *)a;      // pointers TO elements, not the elements
+    int y = *(const int *)b;
+    return (x > y) - (x < y);      // no subtraction: avoids overflow
+}
+
+qsort(arr, n, sizeof arr[0], cmp_int);
+```
+
+Two things bite people here:
+
+1. `a` and `b` point *at* the elements. For an array of `int *`, the comparator receives `int **`.
+2. `return x - y;` overflows for large-magnitude inputs and silently mis-sorts. Use the comparison form above.
+
+### A generic container
+
+The pattern is: store the element size, and move elements with `memcpy`.
+
+```c
+struct vec {
+    unsigned char *data;    // char-family, so arithmetic is legal
+    size_t elem_size, len, cap;
+};
+
+void *vec_at(struct vec *v, size_t i)
+{
+    return v->data + i * v->elem_size;
+}
+
+void vec_push(struct vec *v, const void *elem)
+{
+    /* grow if needed ... */
+    memcpy(v->data + v->len++ * v->elem_size, elem, v->elem_size);
+}
+```
+
+Note `data` is `unsigned char *`, not `void *` — precisely so the arithmetic is portable. The `void *` appears at the API boundary, where the genericity is wanted.
+
+### The cost
+
+`void *` deletes the compiler's ability to check you. Pass the wrong element size, cast to the wrong type, mismatch a callback signature, and you get no diagnostic — just corruption at runtime. Every `void *` in an interface is a small hand-written contract that the compiler will not enforce. Keep them at boundaries and convert back to real types immediately.
+</details>
