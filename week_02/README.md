@@ -502,7 +502,7 @@ m;               // decays to int (*)[4]
 </details>
 
 <details>
-<summary>`void *` for generic code</summary>
+<summary>void * for generic code</summary>
 
 ## What `void *` actually is
 
