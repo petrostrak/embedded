@@ -19,5 +19,9 @@ int main(void)
   printf("%td\n", b - a);
   printf("%td\n", c);
 
+  unsigned char *p = (unsigned char *)arr;
+  for (size_t i = 0; i < sizeof arr; ++i)
+    printf("%p\ti:%zu\n", (void *)(p + i), i);
+
   return 0;
 }
