@@ -8,7 +8,7 @@
 - [x] **Arrays are not pointers, but decay to them.** `sizeof` on an array gives the array size; on a decayed parameter it gives the pointer size.
   - [x] `void f(int a[10])` is really `void f(int *a)` — the `10` is documentation, nothing more.
 - [x] **`void*` for generic code.** Implicit conversion to and from any object pointer; cannot be dereferenced or arithmetic'd (portably).
-- [ ] **`char*` aliasing.** Any object may legally be inspected byte-by-byte through `char*`/`unsigned char*`; the reverse is not generally true.
+- [x] **`char*` aliasing.** Any object may legally be inspected byte-by-byte through `char*`/`unsigned char*`; the reverse is not generally true.
 - [ ] **Function pointers.**
   - [ ] Declaration syntax: `int (*fp)(void *, uint8_t *, size_t);`
   - [ ] Arrays of function pointers (dispatch tables).
