@@ -909,6 +909,7 @@ It is a real, useful escape valve for legacy code, and it costs some optimizatio
 
 <details>
 <summary>Function Pointers</summary>
+  
 A function pointer is a variable that holds **the address of code** instead of the address of data. That's the whole idea. Everything else is syntax.
 
 Why you care: a function pointer is the only way in C to decide *at runtime* which code runs, without a chain of `if`/`switch`. It is the mechanism behind callbacks, plugins, drivers, state machines, virtual dispatch, and every "interface" you will ever build in C.
