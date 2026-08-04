@@ -105,7 +105,6 @@ Build the C equivalent of a Go interface and feel the difference.
 
 - [ ] The ring buffer handles wraparound and the full/empty ambiguity, with tests proving it — not just tests that pass.
 - [ ] You can write a function-pointer declaration and a `const`-qualified pointer declaration from memory, correctly, first try.
-- [ ] You can explain out loud what a Go slice carries that a `T*` does not.
 - [ ] Both files are kept: the ring buffer returns in **Week 15** (UART) and **Week 21** (event queue); `io_stream_t` returns in **Week 16** (testable drivers).
 
 ---
