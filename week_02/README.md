@@ -906,3 +906,579 @@ It is a real, useful escape valve for legacy code, and it costs some optimizatio
 3. To get typed storage, use `malloc` or a union — not a cast onto a `char` array.
 4. Compare and serialize structs field by field.
 </details>
+
+<details>
+<summary>Function Pointers</summary>
+A function pointer is a variable that holds **the address of code** instead of the address of data. That's the whole idea. Everything else is syntax.
+
+Why you care: a function pointer is the only way in C to decide *at runtime* which code runs, without a chain of `if`/`switch`. It is the mechanism behind callbacks, plugins, drivers, state machines, virtual dispatch, and every "interface" you will ever build in C.
+
+## The mental model
+
+A normal function lives at a fixed address once the program is linked:
+
+```c
+int add(int a, int b) { return a + b; }
+```
+
+`add` is a *function designator*. In almost every expression, the compiler silently converts it to `&add` — a pointer to that code. So:
+
+```c
+printf("%p\n", (void *)add);   // prints the code address
+```
+
+A function pointer is just a variable that can store that address, and can be *reassigned*:
+
+```c
+int (*op)(int, int);   // "op can point at any int(int,int) function"
+op = add;              // now op points at add
+int r = op(2, 3);      // calls add(2, 3) -> 5
+```
+
+The type of a function pointer encodes **return type + parameter types**. That's what makes it type-safe: you cannot store an `int(int,int)` into a pointer expecting `void(char*)`.
+
+## Declaration syntax
+
+### The canonical example
+
+```c
+int (*fp)(void *, uint8_t *, size_t);
+```
+
+Read it **inside-out, starting at the identifier**:
+
+| Step | What you read | Meaning |
+|---|---|---|
+| 1 | `fp` | `fp` is… |
+| 2 | `(*fp)` | …a pointer to… |
+| 3 | `(*fp)(void *, uint8_t *, size_t)` | …a function taking `(void *, uint8_t *, size_t)`… |
+| 4 | `int (*fp)(...)` | …returning `int`. |
+
+So: **`fp` is a pointer to a function taking a void pointer, a byte pointer and a size, returning an int.**
+
+That exact shape is the classic C "I/O callback" signature, and it's worth understanding why:
+
+```c
+int (*fp)(void *ctx, uint8_t *buf, size_t len);
+//         ^^^^^^^^^  ^^^^^^^^^^^  ^^^^^^^^^^     ^^^
+//         opaque      byte buffer  buffer size   bytes handled,
+//         "self"                                 or negative errno
+```
+
+- `void *ctx` — the **context pointer**. C has no `this`, so an interface passes the implementation's own state back to it as an opaque pointer. This is the single most important idiom in the whole document (§6).
+- `uint8_t *` — a *byte* buffer. `uint8_t` says "raw octets", where `char *` would ambiguously suggest text.
+- `size_t` — the natural unsigned type for sizes/counts.
+- `int` return — room for both a success value and negative error codes.
+
+### The parentheses are load-bearing
+
+```c
+int (*fp)(int);   // pointer to function returning int
+int  *fp(int);    // FUNCTION returning int* — not a variable at all!
+```
+
+Without the parens, `()` binds tighter than `*`, so you accidentally declare a function. This is the #1 beginner error. Same trap with arrays:
+
+```c
+int (*a[5])(int);   // array of 5 function pointers      <-- usually what you want
+int *(a[5])(int);   // (invalid) array of functions
+int (*a)[5];        // pointer to an array of 5 ints     <-- different thing entirely
+```
+
+### Declaration cheat sheet
+
+```c
+// pointer to function: void -> void
+void (*hook)(void);
+
+// pointer to function taking two ints, returning int
+int (*cmp)(int, int);
+
+// pointer to function taking const void*, const void* -> int   (qsort's comparator)
+int (*qcmp)(const void *, const void *);
+
+// pointer to variadic function
+int (*logf_ptr)(const char *fmt, ...);
+
+// FUNCTION taking a function pointer and returning a function pointer.
+// This is the classic unreadable declaration (it's real: it's `signal`).
+void (*signal(int sig, void (*handler)(int)))(int);
+
+// array of 4 function pointers
+int (*table[4])(void *, uint8_t *, size_t);
+
+// pointer to an array of 4 function pointers (rare, but read it inside-out)
+int (*(*ptable)[4])(void *, uint8_t *, size_t);
+
+// const pointer to function (the pointer can't be reassigned)
+void (*const fixed_hook)(void) = some_func;
+```
+
+> **Tip:** the `cdecl` tool (`apt install cdecl`) will translate these both ways.
+> `cdecl> explain int (*fp)(void*, unsigned char*, unsigned long)`
+
+### Calling and assigning: the redundant-syntax rule
+
+```c
+int (*fp)(int, int);
+
+fp = add;        // OK — function name decays to a pointer
+fp = &add;       // OK — identical meaning; the & is optional noise
+
+int x = fp(1, 2);      // idiomatic
+int y = (*fp)(1, 2);    // also legal — the dereference decays right back
+int z = (****fp)(1, 2); // legal, and a sign you should stop
+```
+
+Prefer `fp = add;` and `fp(1, 2);`. Some codebases write `(*fp)(...)` to signal "this is an indirect call" — read it, don't write it.
+
+**Always null-check a pointer that might be unset:**
+
+```c
+if (fp != NULL)      // or just: if (fp)
+    fp(1, 2);
+```
+
+Calling through a `NULL` function pointer is undefined behaviour, and typically an instant crash (which is the *good* outcome).
+
+### Function pointers as parameters
+
+Parameters declared as functions are automatically adjusted to pointers, so these are the same function:
+
+```c
+void each(int n, int (*f)(int));   // explicit — write this one
+void each(int n, int f(int));      // adjusted to the above — legal, but confusing
+```
+
+The standard-library example everyone meets first:
+
+```c
+#include <stdlib.h>
+
+static int cmp_int(const void *a, const void *b) {
+    int x = *(const int *)a, y = *(const int *)b;
+    return (x > y) - (x < y);   // avoids x-y overflow
+}
+
+int v[] = {5, 2, 9, 1};
+qsort(v, 4, sizeof v[0], cmp_int);   // qsort doesn't know what an int is;
+                                     // you injected that knowledge
+```
+
+That's the point of a callback: `qsort` supplies the *algorithm*, you supply the *policy*.
+
+## Arrays of function pointers (dispatch tables)
+
+A dispatch table replaces a `switch` with an array index. Instead of *branching* to the right code, you *look it up*.
+
+### Before: the switch
+
+```c
+int handle(int opcode, void *ctx, uint8_t *buf, size_t len) {
+    switch (opcode) {
+    case 0: return op_read(ctx, buf, len);
+    case 1: return op_write(ctx, buf, len);
+    case 2: return op_erase(ctx, buf, len);
+    default: return -1;
+    }
+}
+```
+
+### After: the table
+
+```c
+#include <stdint.h>
+#include <stddef.h>
+
+static int op_read (void *ctx, uint8_t *buf, size_t len);
+static int op_write(void *ctx, uint8_t *buf, size_t len);
+static int op_erase(void *ctx, uint8_t *buf, size_t len);
+
+/* Array of 3 pointers to functions (void*, uint8_t*, size_t) -> int */
+static int (*const ops[3])(void *, uint8_t *, size_t) = {
+    op_read,
+    op_write,
+    op_erase,
+};
+
+int handle(size_t opcode, void *ctx, uint8_t *buf, size_t len) {
+    if (opcode >= sizeof ops / sizeof ops[0])   /* MANDATORY bounds check */
+        return -1;
+    if (ops[opcode] == NULL)                    /* if the table can be sparse */
+        return -1;
+    return ops[opcode](ctx, buf, len);          /* the dispatch */
+}
+```
+
+Note `int (*const ops[3])(...)` — an array of `const` pointers. That lets the table live in read-only memory, so a stray write can't turn your dispatch table into an arbitrary-code-execution primitive. **Make dispatch tables `static const` by default.**
+
+### Indexing by enum with designated initializers
+
+Positional initializers rot the moment someone inserts an enum value. Use designated initializers so the table is keyed explicitly:
+
+```c
+typedef enum {
+    OP_READ  = 0,
+    OP_WRITE = 1,
+    OP_ERASE = 2,
+    OP_COUNT          /* sentinel: always last, always the array size */
+} opcode_t;
+
+static int (*const ops[OP_COUNT])(void *, uint8_t *, size_t) = {
+    [OP_READ]  = op_read,
+    [OP_WRITE] = op_write,
+    [OP_ERASE] = op_erase,
+};
+```
+
+Now order in the table is irrelevant, gaps are implicitly `NULL`, and sizing the array with `OP_COUNT` means adding an enum member automatically grows the table. Unfilled slots are zero-initialised — hence the `NULL` check at dispatch time.
+
+### Table-driven state machine
+
+The same array, indexed by *state* instead of *opcode*, is how you write a state machine without a nested switch:
+
+```c
+typedef enum { ST_IDLE, ST_HEADER, ST_BODY, ST_DONE, ST_COUNT } state_t;
+
+/* each step consumes a byte and returns the next state */
+typedef state_t (*step_fn)(void *ctx, uint8_t byte);
+
+static state_t st_idle  (void *ctx, uint8_t b);
+static state_t st_header(void *ctx, uint8_t b);
+static state_t st_body  (void *ctx, uint8_t b);
+static state_t st_done  (void *ctx, uint8_t b);
+
+static const step_fn steps[ST_COUNT] = {
+    [ST_IDLE]   = st_idle,
+    [ST_HEADER] = st_header,
+    [ST_BODY]   = st_body,
+    [ST_DONE]   = st_done,
+};
+
+void run(void *ctx, const uint8_t *in, size_t n) {
+    state_t s = ST_IDLE;
+    for (size_t i = 0; i < n && s != ST_DONE; i++)
+        s = steps[s](ctx, in[i]);
+}
+```
+
+### When a table beats a switch (and when it doesn't)
+
+**Use a table when:**
+- The key is a dense small integer (opcode, state, message type, command ID).
+- The set of handlers is extended by adding rows — a parser, a command shell, a driver.
+- You want the handler set to be *data*: iterable, countable, testable, or swappable at runtime.
+
+**Prefer a `switch` when:**
+- Keys are sparse or non-integer (strings need a lookup loop or hash first).
+- There are three cases and there always will be.
+- You want the compiler to inline: an indirect call can't be inlined, and it costs a branch predictor slot. A `switch` over few cases is usually faster.
+
+A table's real payoff is *decoupling*, not speed. The dispatcher stops knowing what the handlers are.
+
+## `typedef`'d function-pointer types — use these
+
+Raw function-pointer syntax is unreadable once it's nested. `typedef` is the fix, and from here on it's the default way to write an interface.
+
+### Two spellings — know both, pick one
+
+```c
+/* (a) typedef the POINTER type.  Recommended. */
+typedef int (*io_fn)(void *ctx, uint8_t *buf, size_t len);
+
+io_fn f = op_read;      /* f is a pointer, ready to call */
+
+/* (b) typedef the FUNCTION type; you add the * at use sites. */
+typedef int io_fn_t(void *ctx, uint8_t *buf, size_t len);
+
+io_fn_t *g = op_read;   /* note the explicit * */
+```
+
+Form **(a)** is what almost all C code uses (Linux, POSIX, embedded SDKs), and it's what makes struct fields and parameter lists read cleanly. Form (b) has one real advantage: it makes the pointer visible, so `const` behaves predictably (§7).
+
+Keep the names honest — `io_fn`, `cmp_fn`, `alloc_fn`, or `..._cb` for callbacks. Naming it `io_t` hides the fact that it's callable code.
+
+**Put the parameter names in the typedef.** They're documentation, and they're free:
+
+```c
+typedef int (*io_fn)(void *ctx, uint8_t *buf, size_t len);   /* good */
+typedef int (*io_fn)(void *, uint8_t *, size_t);             /* legal, worse */
+```
+
+### What it buys you immediately
+
+```c
+/* Declarations that were painful become obvious: */
+
+io_fn        pick_handler(int kind);            /* return a function pointer */
+void         set_hook(io_fn h);                 /* take one as a parameter */
+static const io_fn ops[OP_COUNT] = { ... };     /* dispatch table */
+io_fn       *dynamic_table;                     /* heap-allocated table */
+
+/* Compare to the raw version of just the first line: */
+int (*pick_handler(int kind))(void *, uint8_t *, size_t);   /* ...no thanks */
+```
+
+### The interface pattern: a struct of function pointers
+
+This is C's version of a vtable / interface / abstract base class, and it's why the `void *ctx` parameter exists. A struct groups related operations; the context pointer carries the implementation's private state.
+
+```c
+typedef struct {
+    const char *name;
+    int  (*open) (void *ctx);
+    int  (*read) (void *ctx, uint8_t *buf, size_t len);
+    int  (*write)(void *ctx, const uint8_t *buf, size_t len);
+    void (*close)(void *ctx);
+} byte_stream_vtbl;
+
+/* An "object" = the operations + the state they operate on. */
+typedef struct {
+    const byte_stream_vtbl *vt;
+    void *ctx;
+} byte_stream;
+
+/* Generic code, written once, against the interface only: */
+int stream_copy(byte_stream *src, byte_stream *dst, size_t n) {
+    uint8_t buf[512];
+    while (n > 0) {
+        size_t chunk = n < sizeof buf ? n : sizeof buf;
+        int got = src->vt->read(src->ctx, buf, chunk);
+        if (got <= 0) return got;
+        int put = dst->vt->write(dst->ctx, buf, (size_t)got);
+        if (put < 0) return put;
+        n -= (size_t)got;
+    }
+    return 0;
+}
+```
+
+An implementation supplies one `static const` vtable and its own context type:
+
+```c
+typedef struct { uint8_t *base; size_t cap, pos; } mem_ctx;
+
+static int mem_read(void *vctx, uint8_t *buf, size_t len) {
+    mem_ctx *c = vctx;                        /* the downcast: void* -> real type */
+    size_t avail = c->cap - c->pos;
+    if (len > avail) len = avail;
+    memcpy(buf, c->base + c->pos, len);
+    c->pos += len;
+    return (int)len;
+}
+/* ...mem_write, mem_open, mem_close... */
+
+static const byte_stream_vtbl mem_stream_vtbl = {
+    .name  = "memory",
+    .open  = mem_open,
+    .read  = mem_read,
+    .write = mem_write,
+    .close = mem_close,
+};
+
+/* Construction: bind the operations to the state. */
+byte_stream mem_stream(mem_ctx *c) {
+    return (byte_stream){ .vt = &mem_stream_vtbl, .ctx = c };
+}
+```
+
+Add a file-backed or socket-backed stream later and `stream_copy` never changes. That's the payoff, and it's the shape of every interface in real C: `struct file_operations` in Linux, `sqlite3_vfs`, `mbedtls`' I/O callbacks, `zlib`'s `alloc_func`/`free_func`.
+
+Three conventions worth adopting:
+1. **`void *ctx` is always the first parameter.** Consistency lets you write generic wrappers.
+2. **Vtables are `static const`** and shared by every instance; only the context is per-instance.
+3. **Designated initializers** (`.read = mem_read`) so adding a member doesn't silently shift everything.
+
+## Complete worked example
+
+A byte sink you can point at either a checksum or a buffer, chosen at runtime — using the exact signature from §2, a dispatch table, and a typedef.
+
+```c
+#include <stdint.h>
+#include <stdio.h>
+#include <stddef.h>
+#include <string.h>
+
+/* ---- the interface ---- */
+typedef int (*sink_fn)(void *ctx, uint8_t *buf, size_t len);
+
+/* ---- implementation 1: sum the bytes ---- */
+typedef struct { uint32_t sum; } sum_ctx;
+
+static int sink_sum(void *vctx, uint8_t *buf, size_t len) {
+    sum_ctx *c = vctx;
+    for (size_t i = 0; i < len; i++) c->sum += buf[i];
+    return (int)len;
+}
+
+/* ---- implementation 2: append to a fixed buffer ---- */
+typedef struct { uint8_t *out; size_t cap, used; } buf_ctx;
+
+static int sink_buf(void *vctx, uint8_t *buf, size_t len) {
+    buf_ctx *c = vctx;
+    if (len > c->cap - c->used) return -1;      /* would overflow */
+    memcpy(c->out + c->used, buf, len);
+    c->used += len;
+    return (int)len;
+}
+
+/* ---- implementation 3: discard ---- */
+static int sink_null(void *vctx, uint8_t *buf, size_t len) {
+    (void)vctx; (void)buf;                      /* silence unused warnings */
+    return (int)len;
+}
+
+/* ---- the dispatch table ---- */
+typedef enum { SINK_SUM, SINK_BUF, SINK_NULL, SINK_COUNT } sink_kind;
+
+static const sink_fn sinks[SINK_COUNT] = {
+    [SINK_SUM]  = sink_sum,
+    [SINK_BUF]  = sink_buf,
+    [SINK_NULL] = sink_null,
+};
+
+static sink_fn sink_lookup(sink_kind k) {
+    if (k < 0 || k >= SINK_COUNT) return NULL;
+    return sinks[k];
+}
+
+/* ---- generic driver: knows nothing about any implementation ---- */
+static int feed(sink_fn sink, void *ctx, uint8_t *data, size_t n) {
+    if (sink == NULL) return -1;
+    size_t done = 0;
+    while (done < n) {
+        int r = sink(ctx, data + done, n - done);
+        if (r <= 0) return r < 0 ? r : -1;
+        done += (size_t)r;
+    }
+    return (int)done;
+}
+
+int main(void) {
+    uint8_t data[] = { 1, 2, 3, 4, 5 };
+
+    sum_ctx s = { 0 };
+    feed(sink_lookup(SINK_SUM), &s, data, sizeof data);
+    printf("sum  = %u\n", s.sum);                /* 15 */
+
+    uint8_t out[8];
+    buf_ctx b = { .out = out, .cap = sizeof out, .used = 0 };
+    feed(sink_lookup(SINK_BUF), &b, data, sizeof data);
+    printf("used = %zu\n", b.used);              /* 5 */
+
+    printf("bad  = %d\n", feed(sink_lookup(SINK_COUNT), NULL, data, 5)); /* -1 */
+    return 0;
+}
+```
+
+Output:
+
+```
+sum  = 15
+used = 5
+bad  = -1
+```
+
+`feed` is written once and never recompiled when you add a sink. Add a row to the enum, a row to the table, done.
+
+## The `void *ctx` idiom, stated plainly
+
+A callback needs to reach its own data. Three ways to do it, in increasing order of correctness:
+
+```c
+/* 1. Global state. Works. Not reentrant, not thread-safe, not testable. */
+static uint32_t g_sum;
+static int cb(uint8_t *buf, size_t len) { /* touches g_sum */ }
+
+/* 2. Context pointer. The C answer. */
+static int cb(void *ctx, uint8_t *buf, size_t len) { sum_ctx *c = ctx; ... }
+
+/* 3. Closures. C doesn't have them. Option 2 is the manual version. */
+```
+
+Rules for context pointers:
+
+- **`void *` in, real type out, immediately:** `sum_ctx *c = vctx;` on line one. No cast needed from `void *` in C.
+- The caller owns the lifetime. Passing `&stack_local` into a callback stored for later use is a dangling-pointer bug.
+- If a callback genuinely needs no state, take `void *` anyway and write `(void)ctx;`. Uniform signatures are worth more than a saved parameter.
+- Never make the context a different parameter position in different callbacks of the same interface.
+
+## Gotchas and rules
+
+**Casting between function pointer types is UB when you *call* through the wrong type.**
+Converting `A*` → `B*` → `A*` is fine; converting `A*` → `B*` and calling it is undefined behaviour, even if the ABI happens to work.
+
+```c
+void (*a)(int) = f;
+void (*b)(void) = (void (*)(void))a;
+b();                     /* UNDEFINED BEHAVIOUR — don't */
+```
+
+**A function pointer is not guaranteed to fit in a `void *`.**
+The C standard only guarantees round-tripping between *function* pointer types. On POSIX, `dlsym` forces it to work in practice, hence the ritual:
+
+```c
+int (*sym)(void) = (int (*)(void))dlsym(h, "f");   /* pedantically UB, universally fine */
+```
+
+Never store function pointers in a `void *` field of your own structs — declare the field with the right type or a `typedef`.
+
+**No arithmetic, no `sizeof` on the function type.**
+`fp + 1` is invalid. `sizeof(*fp)` is invalid. `sizeof fp` is fine (it's a pointer).
+
+**Equality comparison is fine; ordering is not meaningful.**
+
+```c
+if (fp == op_read) { ... }      /* fine, and useful */
+if (fp < op_write) { ... }      /* meaningless */
+```
+
+**Empty parameter lists.**
+`void (*fp)()` historically meant "unspecified parameters", which disables argument checking — a silent bug factory. Always write `(void)` for no-arguments. (C23 finally made `()` mean `(void)`, but write `(void)` for portability.)
+
+**`const` and typedef'd pointers.**
+
+```c
+typedef int (*io_fn)(void *, uint8_t *, size_t);
+
+const io_fn f;          /* CONST POINTER to function — f can't be reassigned. */
+                        /* It does NOT mean "pointer to const function". */
+static const io_fn tbl[3] = { ... };   /* what you want for a dispatch table */
+```
+
+This surprises people, which is the main argument for typedef form (b) in §4.
+
+**Signature mismatch is a real compile error — do not cast it away.**
+If the compiler complains that your handler doesn't match the table's type, the fix is to change the handler, never to insert a cast. A cast here converts a compile-time error into a runtime crash.
+
+**Security: writable function pointers are an exploit target.**
+Overwriting a function pointer redirects execution. Hence: `static const` tables, function pointers in read-only memory where possible, and bounds-checked indices always. In hardened codebases you'll also see pointer mangling or CFI for stored callbacks.
+
+**Compile with `-Wall -Wextra`.** Most function-pointer mistakes are diagnosable, and warnings here are almost never noise.
+
+## Quick reference
+
+| Task | Syntax |
+|---|---|
+| Declare | `int (*fp)(void *, uint8_t *, size_t);` |
+| Typedef the pointer type | `typedef int (*io_fn)(void *ctx, uint8_t *buf, size_t len);` |
+| Typedef the function type | `typedef int io_fn_t(void *, uint8_t *, size_t);` then `io_fn_t *p;` |
+| Assign | `fp = handler;` (the `&` is optional) |
+| Call | `fp(ctx, buf, len);` |
+| Null-check | `if (fp) fp(ctx, buf, len);` |
+| Array of them | `static const io_fn tbl[N] = { [K] = handler, ... };` |
+| Dispatch safely | `if (k < N && tbl[k]) tbl[k](ctx, buf, len);` |
+| Parameter | `void set(io_fn cb, void *ctx);` |
+| Return one | `io_fn pick(int kind);` |
+| Struct member (interface) | `int (*read)(void *ctx, uint8_t *buf, size_t len);` |
+| Decode ugly declarations | `cdecl> explain <declaration>` |
+
+### Rules of thumb
+
+1. `typedef` every function-pointer type you use more than once, with parameter names.
+2. `void *ctx` first, always, even when unused.
+3. Dispatch tables are `static const` and indexed by enum with designated initializers.
+4. Bounds-check the index; null-check the slot.
+5. Never cast a function pointer to fix a type error.
+6. Write `(void)` for empty parameter lists.
+</details>
