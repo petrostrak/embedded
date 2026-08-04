@@ -91,16 +91,6 @@ Build the C equivalent of a Go interface and feel the difference.
 - [ ] Write one function that takes `io_stream_t *` and works without knowing which backend it got (e.g. `stream_write_all` or a hexdump-to-stream).
 - [ ] Run it against both backends from `main`.
 
-### The comparison
-
-- [ ] In comments, list every piece of safety Go's interface gave you that this does **not**:
-  - [ ] Compile-time check that a type actually implements the method set.
-  - [ ] Type safety on the receiver — `ctx` is `void*`, nothing stops you pairing the wrong ctx with the wrong function table.
-  - [ ] Nil-method protection — a `NULL` function pointer is a crash, not a compile error.
-  - [ ] Lifetime guarantees — nothing keeps `ctx` alive as long as the stream.
-  - [ ] Method sets attached to the type rather than assembled by hand at every construction site.
-- [ ] Note which of these you could recover with discipline (a `const` static vtable, an init function per backend) and which you simply cannot.
-
 ## Done when
 
 - [ ] The ring buffer handles wraparound and the full/empty ambiguity, with tests proving it — not just tests that pass.
