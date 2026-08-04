@@ -25,8 +25,10 @@ static int op_read(void *ctx, uint8_t *buf, size_t len);
 static int op_write(void *ctx, uint8_t *buf, size_t len);
 static int op_erase(void *ctx, uint8_t *buf, size_t len);
 
+typedef int (*fn)(void *ctx, uint8_t *buf, size_t len);
+
 /* Array of OP_COUNT const pointers to int (void *, uint8_t *, size_t) */
-static int (*const ops[OP_COUNT])(void *, uint8_t *, size_t) = {
+static const fn ops[OP_COUNT] = {
     [OP_READ] = op_read,
     [OP_WRITE] = op_write,
     [OP_ERASE] = op_erase,
