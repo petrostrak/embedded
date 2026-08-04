@@ -9,7 +9,7 @@ int main(void)
   for (size_t i = 0; i < 5; i++)
   {
     printf("int*:   %p -> %p (%td bytes)\n", (void *)ip, (void *)(ip + i),
-           (char *)(ip + i) - (char *)ip);
+           (unsigned char *)(ip + i) - (unsigned char *)ip);
   }
 
   int *a = &arr[0];
