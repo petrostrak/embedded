@@ -9,10 +9,10 @@
   - [x] `void f(int a[10])` is really `void f(int *a)` — the `10` is documentation, nothing more.
 - [x] **`void*` for generic code.** Implicit conversion to and from any object pointer; cannot be dereferenced or arithmetic'd (portably).
 - [x] **`char*` aliasing.** Any object may legally be inspected byte-by-byte through `char*`/`unsigned char*`; the reverse is not generally true.
-- [ ] **Function pointers.**
-  - [ ] Declaration syntax: `int (*fp)(void *, uint8_t *, size_t);`
-  - [ ] Arrays of function pointers (dispatch tables).
-  - [ ] `typedef`'d function-pointer types — use these, they are how you'll build every interface for the rest of the roadmap.
+- [x] **Function pointers.**
+  - [x] Declaration syntax: `int (*fp)(void *, uint8_t *, size_t);`
+  - [x] Arrays of function pointers (dispatch tables).
+  - [x] `typedef`'d function-pointer types — use these, they are how you'll build every interface for the rest of the roadmap.
 - [ ] **`const` placement.** `const char *p` (pointee is const) vs `char * const p` (pointer is const) vs `const char * const p`.
   - [ ] Read declarations right-to-left and be able to say each one out loud.
 - [ ] **Struct pointers.** `->` vs `(*p).`, passing structs by pointer instead of by value.
