@@ -1,9 +1,9 @@
 #ifndef RING_BUF_H
 #define RING_BUF_H
 
-#include <cstddef>
-#include <cstdint>
-#include <iterator>
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
 
 typedef struct
 {
