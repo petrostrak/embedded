@@ -24,7 +24,7 @@ Caller supplies storage; the module never allocates.
 
 ### Interface
 
-- [ ] Write `ringbuf.h`:
+- [x] Write `ringbuf.h`:
   ```c
   typedef struct {
       uint8_t  *buf;
@@ -38,8 +38,8 @@ Caller supplies storage; the module never allocates.
   bool   rb_get  (ringbuf_t *rb, uint8_t *out);
   size_t rb_count(const ringbuf_t *rb);
   ```
-- [ ] Note why `rb_count` takes `const ringbuf_t *` and the others don't.
-- [ ] Note why the caller supplies `storage` instead of the module calling `malloc`.
+- [x] Note why `rb_count` takes `const ringbuf_t *` and the others don't.
+- [x] Note why the caller supplies `storage` instead of the module calling `malloc`.
 
 ### Implementation
 
