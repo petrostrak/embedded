@@ -3,6 +3,16 @@
 #include <stddef.h>
 #include <stdint.h>
 
+static inline bool rb_empty(const ringbuf_t *rb)
+{
+  return !rb->full && rb->head == rb->tail;
+}
+
+static inline size_t rb_next(const ringbuf_t *rb, size_t idx)
+{
+  return (idx + 1 == rb->capacity) ? 0 : idx + 1;
+}
+
 void rb_init(ringbuf_t *rb, uint8_t *storage, size_t capacity)
 {
   rb->buf = storage;
@@ -18,12 +28,7 @@ bool rb_put(ringbuf_t *rb, uint8_t byte)
     return false;
 
   rb->buf[rb->head] = byte;
-
-  size_t next = rb->head + 1;
-  if (next == rb->capacity)
-    next = 0;
-  rb->head = next;
-
+  rb->head = rb_next(rb, rb->head);
   rb->full = (rb->head == rb->tail);
 
   return true;
@@ -31,17 +36,13 @@ bool rb_put(ringbuf_t *rb, uint8_t byte)
 
 bool rb_get(ringbuf_t *rb, uint8_t *out)
 {
-  if (!rb->full && rb->head == rb->tail)
+  if (rb_empty(rb))
     return false; /* empty and *out is untouched */
 
   *out = rb->buf[rb->tail];
-
-  size_t next = rb->tail + 1;
-  if (next == rb->capacity)
-    next = 0;
-  rb->tail = next;
-
+  rb->tail = rb_next(rb, rb->tail);
   rb->full = false;
+
   return true;
 }
 
