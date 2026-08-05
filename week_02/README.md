@@ -49,19 +49,8 @@ Caller supplies storage; the module never allocates.
 - [x] Handle the **full/empty ambiguity**: `head == tail` means both. Resolve it with the `full` flag and say in a comment what the alternative (sacrifice one slot) would have cost.
 - [x] Handle **wraparound** — index advance via `(i + 1) % capacity`.
   - [x] Note what changes if you require `capacity` to be a power of two and mask instead of modulo. (This matters later on an MCU.)
-
-### Tests
-
-- [ ] Put then get one byte.
-- [ ] Fill to capacity, confirm the next `rb_put` returns `false`.
-- [ ] Drain to empty, confirm the next `rb_get` returns `false`.
-- [ ] Fill, drain, fill again — proves `head`/`tail` wrap correctly rather than only working once.
-- [ ] Interleaved put/get across the wrap point.
-- [ ] `rb_count` correct at empty, partial, full, and post-wrap.
-- [ ] Capacity 1 edge case.
-- [ ] Build with the Week 1 flags:
   ```
-  gcc -Wall -Wextra -Werror -Wconversion -std=c11 ringbuf.c test_ringbuf.c -o test_rb
+  gcc -Wall -Wextra -Werror -Wconversion -std=c11 ringbuf.c main.c -o ringbuf
   ```
 
 ## Project B — An interface, by hand
