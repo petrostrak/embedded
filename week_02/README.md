@@ -43,7 +43,7 @@ Caller supplies storage; the module never allocates.
 
 ### Implementation
 
-- [ ] `rb_init` — store the pointer, set `head = tail = 0`, `full = false`. Don't touch the caller's bytes.
+- [x] `rb_init` — store the pointer, set `head = tail = 0`, `full = false`. Don't touch the caller's bytes.
 - [ ] `rb_put` — return `false` when full (do not overwrite).
 - [ ] `rb_get` — return `false` when empty; write through `out` only on success.
 - [ ] Handle the **full/empty ambiguity**: `head == tail` means both. Resolve it with the `full` flag and say in a comment what the alternative (sacrifice one slot) would have cost.
