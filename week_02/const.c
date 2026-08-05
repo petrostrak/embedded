@@ -20,5 +20,13 @@ int main(void)
   a[0] = 'H';         /* fine - 'a' is not const, only our view of ti is */
   printf("%s\n", a);  /* Hello */
 
+  char *const q = b;
+
+  *q = 'W'; /* can write through the pointer */
+  q[1] = '0';
+
+  /* cannot point to another object */
+  // q = a;
+
   return 0;
 }
