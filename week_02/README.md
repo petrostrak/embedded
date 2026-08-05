@@ -1472,3 +1472,532 @@ Overwriting a function pointer redirects execution. Hence: `static const` tables
 5. Never cast a function pointer to fix a type error.
 6. Write `(void)` for empty parameter lists.
 </details>
+
+<details>
+<summary>const placement</summary>
+## The One Rule That Explains Everything
+
+> **`const` applies to the thing immediately to its LEFT.**
+> **If there is nothing to its left, it applies to the thing on its RIGHT.**
+
+That's it. Everything else in this document follows from that rule.
+
+Reading a declaration works best **right-to-left**, starting from the variable name:
+
+```c
+const char *p;
+//         ^ p is a
+//        ^^ pointer to
+// ^^^^^^^^^ a const char
+```
+
+```c
+char * const p;
+//           ^ p is a
+//     ^^^^^ const
+//   ^ pointer to
+// ^^^^ a char
+```
+
+A pointer has **two** things that could be constant:
+
+1. The **pointee** — the data the pointer points at.
+2. The **pointer** — the variable holding the address.
+
+`const` on the left of the `*` freezes the *data*. `const` on the right of the `*` freezes the *pointer*.
+
+**Mental shortcut:** the `*` is the fence. `const` before the fence protects the data; `const` after the fence protects the address.
+
+The fence is the `*` — **not** the type name. This matters because of the alternate spelling:
+
+```c
+const char *p;    // const is left of the *  →  data protected
+char const *p;    // const is STILL left of the *  →  data protected (identical)
+char * const p;   // const is right of the *  →  address protected
+```
+
+In `char const *p` the `const` has moved to the right of `char`, so it looks like it switched sides. It didn't. Only **crossing the `*`** changes the meaning.
+
+### Why there are exactly two `const`s: the two-boxes model
+
+The reason a pointer needs two possible `const`s is that **a pointer is itself a variable with its own storage.** There are two boxes in memory, not one:
+
+```
+ char a[] = "abc";    // a occupies 0x7ffd10 .. 0x7ffd13
+ char b[] = "xyz";    // b is a SEPARATE object, say at 0x7ffd20
+
+ p (at 0x7ffd00)      a (at 0x7ffd10)
+  ┌────────────┐       ┌─────┬─────┬─────┬─────┐
+  │  0x7ffd10  │──────▶│ 'a' │ 'b' │ 'c' │ \0  │
+  └────────────┘       └─────┴─────┴─────┴─────┘
+                          10    11    12    13
+
+                       b (at 0x7ffd20)
+                       ┌─────┬─────┬─────┬─────┐
+                       │ 'x' │ 'y' │ 'z' │ \0  │
+                       └─────┴─────┴─────┴─────┘
+```
+
+Both are assignments; both change something. They just change different boxes — and each box gets its own `const`.
+
+```c
+ const char *p = a;
+ *p = 'Z';      // ❌ right box frozen
+ p  = b;        // ✅ left box free — p now holds b's address instead
+
+    p                     a  (still "abc" — untouched)
+  ┌────────────┐       ┌─────┬─────┬─────┬─────┐
+  │  0x7ffd20  │       │ 'a' │ 'b' │ 'c' │ \0  │
+  └──────┬─────┘       └─────┴─────┴─────┴─────┘
+         │
+         │             b
+         └────────────▶┌─────┬─────┬─────┬─────┐
+                       │ 'x' │ 'y' │ 'z' │ \0  │
+                       └─────┴─────┴─────┴─────┘
+
+ char * const q = a;
+ *q = 'Z';      // ✅ right box free
+ q  = b;        // ❌ left box frozen — q holds a's address forever
+
+
+    q                     a  →  now "Zbc"
+  ┌────────────┐       ┌─────┬─────┬─────┬─────┐
+  │  0x7ffd10  │──────▶│ 'Z' │ 'b' │ 'c' │ \0  │
+  └────────────┘       └─────┴─────┴─────┴─────┘
+```
+
+#### A phrasing trap
+
+It's tempting to describe `const char *p` as "you can't change the address of the value it points to." That's not it, and the confusion is worth heading off:
+
+- The address of `a` **never** changes. `a` lives at `0x7ffd10` for its entire lifetime, and nothing in C can move it. There's no such operation to forbid.
+- What *can* change is **which address is stored inside `p`** — the left box's contents. Overwriting it is what "reassignment" or "repointing" means, and that's the second thing `const` can freeze.
+
+So the accurate pair of questions is always: *can I write to the pointee (`*p`)?* and *can I write to the pointer (`p`)?*
+
+#### Why the distinction earns its keep
+
+`strlen` shows why you'd want one without the other:
+
+```c
+size_t strlen(const char *s) {
+    size_t n = 0;
+    while (*s) { n++; s++; }   // s++ writes to the LEFT box — must be allowed
+    return n;
+}
+```
+
+It has to walk the string, so it repoints `s` on every iteration — yet it must never write a character. That's exactly `const char *`. Declaring the parameter `const char * const` would break the loop, and `char *` would throw away the guarantee that callers care about.
+
+## The Four Combinations at a Glance
+
+| Declaration | Name | Can I change `*p`? | Can I change `p`? |
+|---|---|---|---|
+| `char *p` | pointer to char | ✅ yes | ✅ yes |
+| `const char *p` | pointer to const char | ❌ no | ✅ yes |
+| `char * const p` | const pointer to char | ✅ yes | ❌ no |
+| `const char * const p` | const pointer to const char | ❌ no | ❌ no |
+
+## `const char *p` — The Pointee Is Const
+
+Also spelled `char const *p`. These two are **100% identical**; there is no difference whatsoever. (`const char *` is more common in the wild; `char const *` is more consistent with the right-to-left rule.)
+
+**Meaning:** "I have a pointer that I promise not to write through. But I'm free to point it somewhere else."
+
+```c
+#include <stdio.h>
+
+int main(void) {
+    char a[] = "hello";
+    char b[] = "world";
+
+    const char *p = a;
+
+    // ❌ Cannot write through the pointer
+    // p[0] = 'H';        // error: assignment of read-only location
+    // *p   = 'H';        // error: same thing
+
+    // ✅ Can move the pointer freely
+    p = b;                // fine
+    p = p + 1;            // fine
+    p++;                  // fine
+    p = NULL;             // fine
+
+    // ✅ Can still read through it
+    printf("%c\n", *p);
+
+    // ✅ And the underlying array is still writable via its own name
+    a[0] = 'H';           // fine — `a` is not const, only our view of it is
+    printf("%s\n", a);    // Hello
+
+    return 0;
+}
+```
+
+### Key insight: `const` here describes *your access path*, not the object
+
+This is the most misunderstood part. `const char *p` does not mean "the data is in read-only memory." It means "**you** may not write through **this particular pointer**." The object itself may be perfectly mutable through another name.
+
+```c
+char buf[] = "abc";
+const char *view = buf;   // read-only view
+buf[0] = 'X';             // ✅ legal — the object was never const
+printf("%s\n", view);     // Xbc
+```
+
+### This is the form you'll use 95% of the time
+
+It's the standard way to say "input parameter, I won't modify it":
+
+```c
+size_t strlen(const char *s);
+int    strcmp(const char *s1, const char *s2);
+char  *strcpy(char *dest, const char *src);   // dest is written, src is not
+```
+
+Reading `strcpy`'s signature tells you the whole story: `src` is const, so it's the source; `dest` isn't, so it's the destination. **`const` is documentation the compiler enforces.**
+
+### It's also correct for string literals
+
+String literals in C have type `char[N]`, but modifying one is **undefined behaviour**. Always point at them with `const char *`:
+
+```c
+const char *msg = "hello";   // ✅ good — compiler stops you from writing to it
+char       *bad = "hello";   // ⚠️ legal C, but a trap
+// bad[0] = 'H';             // undefined behaviour — often a segfault
+```
+
+```c
+char ok[] = "hello";  // ✅ different thing entirely: a mutable *copy* of the literal
+ok[0] = 'H';          // fine
+```
+
+## `char * const p` — The Pointer Is Const
+
+**Meaning:** "This pointer will point at the same address for its entire life. But I can freely modify what's there."
+
+Because the pointer itself can never be assigned, it **must be initialised at declaration**:
+
+```c
+#include <stdio.h>
+
+int main(void) {
+    char a[] = "hello";
+    char b[] = "world";
+
+    char * const p = a;      // must initialise here
+    // char * const q;       // ❌ error: uninitialised const — useless forever
+
+    // ✅ Can write through the pointer
+    p[0] = 'H';
+    *p   = 'H';
+    printf("%s\n", a);       // Hello
+
+    // ❌ Cannot move the pointer
+    // p = b;                // error: assignment of read-only variable 'p'
+    // p++;                  // error
+    // p = NULL;             // error
+
+    return 0;
+}
+```
+
+Note that `p[0] = 'H'` **is** allowed. Indexing dereferences — it doesn't modify `p` itself.
+
+### When you'd actually use it
+
+This form is rarer, but it has real uses:
+
+**Memory-mapped hardware registers** (almost always paired with `volatile`):
+
+```c
+// The register lives at a fixed address forever; its contents change constantly.
+volatile uint32_t * const UART_DR = (volatile uint32_t *)0x4000C000;
+
+*UART_DR = 'A';    // ✅ write to the register
+// UART_DR = ...;  // ❌ the address is a hardware fact, not a variable
+```
+
+**A parameter you don't want to accidentally reassign inside a long function:**
+
+```c
+void process(char * const buf, size_t n) {
+    for (size_t i = 0; i < n; i++)
+        buf[i] = toupper((unsigned char)buf[i]);   // ✅ mutate contents
+    // buf++;   // ❌ compiler catches you clobbering your only handle to the buffer
+}
+```
+
+Note that this `const` is purely for *you*, inside the function body. It's invisible to callers
+
+## `const char * const p` — Both Are Const
+
+Also spelled `char const * const p`.
+
+**Meaning:** "This pointer always points here, and I never write through it." A fully read-only handle.
+
+```c
+#include <stdio.h>
+
+int main(void) {
+    const char msg[] = "hello";
+
+    const char * const p = msg;   // must initialise
+
+    printf("%s\n", p);            // ✅ reading is fine
+    printf("%c\n", p[1]);         // ✅ fine
+
+    // p[0] = 'H';                // ❌ error: pointee is const
+    // p = NULL;                  // ❌ error: pointer is const
+
+    return 0;
+}
+```
+
+Common in file-scope lookup tables and configuration:
+
+```c
+static const char * const weekdays[] = {
+    "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"
+};
+// Neither the strings nor the array's pointer entries can be modified.
+```
+
+Read that one right-to-left: `weekdays` is an array of const pointers to const char.
+
+---
+
+## Side-by-Side Comparison
+
+```c
+char x = 'x', y = 'y';
+
+char               *p1 = &x;   // nothing const
+const char         *p2 = &x;   // pointee const
+char * const        p3 = &x;   // pointer const
+const char * const  p4 = &x;   // both const
+
+*p1 = 'a';   // ✅
+*p2 = 'a';   // ❌ error
+*p3 = 'a';   // ✅
+*p4 = 'a';   // ❌ error
+
+p1 = &y;     // ✅
+p2 = &y;     // ✅
+p3 = &y;     // ❌ error
+p4 = &y;     // ❌ error
+```
+
+A compact way to remember which is which:
+
+```
+const char *p          →  * is right of const  →  const guards the DATA
+char * const p         →  * is left  of const  →  const guards the POINTER
+```
+
+---
+
+## Gotchas and Fine Print
+
+### `typedef` hides the star — and changes the meaning
+
+This trips up almost everyone. When the `*` is buried inside a `typedef`, `const` can no longer reach past it. The `const` becomes **top-level**, applying to the pointer.
+
+```c
+typedef char *string_t;
+
+const string_t s = buf;
+// This is NOT `const char *s`.
+// This is `char * const s`  — a const POINTER to mutable char!
+
+*s = 'X';    // ✅ allowed (surprising!)
+// s = buf2; // ❌ error
+```
+
+Same effect as `const` on any other typedef'd type: `const T x` freezes `x`, and here `T` *is* the pointer.
+
+**Rule of thumb:** avoid typedef'ing pointer types. If you must, name them clearly (`typedef struct foo *foo_handle_t;`) and remember that `const foo_handle_t` freezes the handle, not the `foo`.
+
+### `char **` does **not** implicitly convert to `const char **`
+
+You can add `const` at the *first* level for free. You cannot silently add it at deeper levels.
+
+```c
+char *arr[3];
+
+char       **pp = arr;      // ✅
+const char **cpp = arr;     // ⚠️ warning/error: incompatible pointer types
+```
+
+This restriction exists to prevent laundering a `const` away. If the conversion were allowed:
+
+```c
+const char *literal = "hi";
+char *mutable_p;
+const char **cheat = &mutable_p;   // if this were legal...
+*cheat = literal;                  // ...store a const pointer into mutable_p
+mutable_p[0] = 'X';                // 💥 wrote to a string literal, no cast in sight
+```
+
+The safe deep-const type is `const char * const *`:
+
+```c
+void print_all(const char * const *strings, size_t n);   // ✅ correct deep-const
+
+char *argvish[] = { "a", "b" };
+print_all(argvish, 2);   // still needs care; C is stricter here than you'd like
+```
+
+In practice C code often just uses `const char **` and accepts a cast, or drops the inner `const`. C++ has the same rule but better tooling around it.
+
+### Top-level `const` on a parameter is invisible to callers
+
+These two **declare the same function**. The `const` is not part of the type signature:
+
+```c
+void f(char *p);
+void f(char * const p);   // same function — not an overload, not a conflict
+```
+
+The compiler discards top-level `const` on parameters when comparing prototypes. It only affects what you may do to `p` inside the body. Because parameters are passed by value, modifying `p` inside `f` never affects the caller's pointer anyway — this `const` just documents intent to the body's author.
+
+Contrast with `const char *p`, where the `const` **is** part of the type and **does** affect callers:
+
+```c
+void g(char *p);
+void g(const char *p);    // ❌ different type — conflicting declarations in C
+```
+
+### Arrays in parameter lists
+
+In a parameter list, an array declaration decays to a pointer. These are all equivalent:
+
+```c
+void f(const char  s[]);     // identical to...
+void f(const char  s[10]);   // identical to...
+void f(const char *s);       // ...this
+```
+
+To get a *const pointer* parameter with array syntax, C99 lets you put qualifiers inside the brackets:
+
+```c
+void f(char s[const]);       // same as char * const s
+void f(char s[static 10]);   // caller must pass ≥10 elements (C99)
+```
+
+### `const` does not mean "compile-time constant"
+
+In C, `const` means **read-only**, not "known at compile time." A `const int` is generally not usable where a constant expression is required:
+
+```c
+const int n = 10;
+int a[n];              // ⚠️ C99 VLA, not a true constant expression;
+                       //    illegal in C89 and in file scope
+static int b[n];       // ❌ error — needs a constant expression
+
+#define N 10
+enum { M = 10 };
+int c[N];              // ✅
+int d[M];              // ✅
+```
+
+For array sizes and `case` labels, use `#define` or an `enum`. (This differs from C++, where `const int` at file scope *is* a constant expression.)
+
+### Casting away `const` is legal but dangerous
+
+The cast itself is well-defined. Writing through it is not, **if the underlying object is genuinely const**:
+
+```c
+const char *p = "hello";
+char *q = (char *)p;     // legal cast
+q[0] = 'H';              // 💥 undefined behaviour — literal may be in read-only memory
+
+char buf[] = "hello";
+const char *v = buf;
+((char *)v)[0] = 'H';    // technically defined (object isn't const) but terrible style
+```
+
+If you find yourself casting away `const`, your API's const-correctness is probably wrong. The one semi-legitimate use is implementing something like `strchr`, which by design returns a non-const pointer into a const string — a known wart in the standard library.
+
+### `const` on the return type
+
+```c
+const char *get_name(void);   // caller must not modify the returned string ✅ useful
+char * const get_ptr(void);   // top-level const on a returned value — meaningless
+```
+
+Returned values aren't assignable objects in C, so top-level `const` on a return type does nothing. Some compilers warn about it.
+
+### Multiple declarators on one line
+
+The `*` binds to the individual declarator, but the type prefix is shared:
+
+```c
+const char *a, *b;      // both are `const char *`
+const char *a, b;       // ⚠️ a is `const char *`, b is a plain `const char`!
+char * const c, d;      // ⚠️ c is `char * const`, d is a plain `char`
+```
+
+Declare one pointer per line. This is a large part of why the `const char *p` spelling (star hugging the name) survives.
+
+## How to Read Any Declaration
+
+Apply the **right-left rule**: start at the identifier, then repeatedly go right if you can, else go left.
+
+```c
+const char * const *p;
+```
+
+- `p` — is a
+- (nothing to the right) go left: `*` — pointer to
+- `const` — a const
+- `*` — pointer to
+- `const char` — a const char
+
+→ *`p` is a pointer to a const pointer to a const char.* You can reassign `p`; you cannot reassign `*p`; you cannot modify `**p`.
+
+Another:
+
+```c
+char * const *p[10];
+```
+
+- `p` — is an
+- `[10]` — array of 10
+- `*` — pointers to
+- `const` — const
+- `*` — pointers to
+- `char` — char
+
+→ *array of 10 pointers to const pointers to char.*
+
+When in doubt, the `cdecl` tool (or `cdecl.org`) translates declarations into English for you.
+
+## 9. Practical Guidelines
+
+1. **Default to `const char *` for every input parameter you don't modify.** It's free documentation, it catches bugs, and it lets callers pass const data.
+2. **Always use `const char *` for string literals.** Never `char *`.
+3. **Reach for `char * const` sparingly** — mainly for hardware register addresses and file-scope tables.
+4. **Apply `const` bottom-up, not top-down.** Adding `const` to a leaf function often forces you to add it up the call chain; that's a good thing, but plan for it.
+5. **Prefer `char const *` if you want spelling that matches the reading rule** — just be consistent within a codebase.
+6. **Never `typedef` a pointer type** unless it's an opaque handle, and document what `const` means on it.
+7. **Treat a needed `const` cast as a design smell.**
+
+## 10. Quick Cheat Sheet
+
+```c
+char *p;                    // mutable data, mutable pointer
+const char *p;              // read-only data, mutable pointer      ← use this most
+char const *p;              // identical to the line above
+char * const p;             // mutable data, fixed pointer          ← needs initialiser
+const char * const p;       // read-only data, fixed pointer        ← needs initialiser
+char const * const p;       // identical to the line above
+
+const char **p;             // ptr to (ptr to const char)
+char * const *p;            // ptr to (const ptr to char)
+char ** const p;            // const ptr to (ptr to char)
+const char * const *p;      // ptr to (const ptr to const char)
+```
+
+**The fence mnemonic:** `const` before the `*` protects the **data**; `const` after the `*` protects the **address**.
+</details>
