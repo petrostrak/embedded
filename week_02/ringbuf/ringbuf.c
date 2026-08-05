@@ -44,3 +44,12 @@ bool rb_get(ringbuf_t *rb, uint8_t *out)
   rb->full = false;
   return true;
 }
+
+size_t rb_count(const ringbuf_t *rb)
+{
+  if (rb->full)
+    return rb->capacity;
+  if (rb->head >= rb->tail)
+    return rb->head - rb->tail;
+  return rb->capacity + rb->head - rb->tail;
+}
