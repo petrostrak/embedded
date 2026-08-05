@@ -46,9 +46,9 @@ Caller supplies storage; the module never allocates.
 - [x] `rb_init` — store the pointer, set `head = tail = 0`, `full = false`. Don't touch the caller's bytes.
 - [x] `rb_put` — return `false` when full (do not overwrite).
 - [x] `rb_get` — return `false` when empty; write through `out` only on success.
-- [ ] Handle the **full/empty ambiguity**: `head == tail` means both. Resolve it with the `full` flag and say in a comment what the alternative (sacrifice one slot) would have cost.
-- [ ] Handle **wraparound** — index advance via `(i + 1) % capacity`.
-  - [ ] Note what changes if you require `capacity` to be a power of two and mask instead of modulo. (This matters later on an MCU.)
+- [x] Handle the **full/empty ambiguity**: `head == tail` means both. Resolve it with the `full` flag and say in a comment what the alternative (sacrifice one slot) would have cost.
+- [x] Handle **wraparound** — index advance via `(i + 1) % capacity`.
+  - [x] Note what changes if you require `capacity` to be a power of two and mask instead of modulo. (This matters later on an MCU.)
 
 ### Tests
 
