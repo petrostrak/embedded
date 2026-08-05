@@ -1475,6 +1475,7 @@ Overwriting a function pointer redirects execution. Hence: `static const` tables
 
 <details>
 <summary>const placement</summary>
+  
 ## The One Rule That Explains Everything
 
 > **`const` applies to the thing immediately to its LEFT.**
