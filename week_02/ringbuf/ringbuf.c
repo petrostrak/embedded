@@ -28,3 +28,19 @@ bool rb_put(ringbuf_t *rb, uint8_t byte)
 
   return true;
 }
+
+bool rb_get(ringbuf_t *rb, uint8_t *out)
+{
+  if (!rb->full && rb->head == rb->tail)
+    return false; /* empty and *out is untouched */
+
+  *out = rb->buf[rb->tail];
+
+  size_t next = rb->tail + 1;
+  if (next == rb->capacity)
+    next = 0;
+  rb->tail = next;
+
+  rb->full = false;
+  return true;
+}
