@@ -13,8 +13,8 @@
   - [x] Declaration syntax: `int (*fp)(void *, uint8_t *, size_t);`
   - [x] Arrays of function pointers (dispatch tables).
   - [x] `typedef`'d function-pointer types — use these, they are how you'll build every interface for the rest of the roadmap.
-- [ ] **`const` placement.** `const char *p` (pointee is const) vs `char * const p` (pointer is const) vs `const char * const p`.
-  - [ ] Read declarations right-to-left and be able to say each one out loud.
+- [x] **`const` placement.** `const char *p` (pointee is const) vs `char * const p` (pointer is const) vs `const char * const p`.
+  - [x] Read declarations right-to-left and be able to say each one out loud.
 - [ ] **Struct pointers.** `->` vs `(*p).`, passing structs by pointer instead of by value.
 - [ ] **Designated initialisers.** `.field = value`, and why they're safer than positional initialisers when a struct changes.
 
