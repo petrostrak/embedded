@@ -15,8 +15,8 @@
   - [x] `typedef`'d function-pointer types — use these, they are how you'll build every interface for the rest of the roadmap.
 - [x] **`const` placement.** `const char *p` (pointee is const) vs `char * const p` (pointer is const) vs `const char * const p`.
   - [x] Read declarations right-to-left and be able to say each one out loud.
-- [ ] **Struct pointers.** `->` vs `(*p).`, passing structs by pointer instead of by value.
-- [ ] **Designated initialisers.** `.field = value`, and why they're safer than positional initialisers when a struct changes.
+- [x] **Struct pointers.** `->` vs `(*p).`, passing structs by pointer instead of by value.
+- [x] **Designated initialisers.** `.field = value`, and why they're safer than positional initialisers when a struct changes.
 
 ## Project A — Ring buffer, no allocation
 
@@ -2001,4 +2001,29 @@ const char * const *p;      // ptr to (const ptr to const char)
 ```
 
 **The fence mnemonic:** `const` before the `*` protects the **data**; `const` after the `*` protects the **address**.
+</details>
+
+<details>
+<summary>Designated initialisers</summary>
+
+### Useful patterns
+Defaults with overrides. A later designator for the same member wins, so you can layer:
+```c
+#define CONFIG_DEFAULTS  .timeout_ms = 5000, .retries = 3, .verbose = false
+
+struct Config a = { CONFIG_DEFAULTS, .channel = 3, .retries = 5 };  /* retries == 5 */
+```
+### Array designators
+which work the same way:
+```c
+int codes[6] = { [0] = 1, [5] = 9 };            /* rest zero */
+const char *names[] = { [2] = "gamma" };        /* size 3 */
+```
+### Compound literals
+for anonymous arguments and in-place resets:
+```c
+void configure(const struct Config *cfg);
+configure(&(struct Config){ .channel = 3, .timeout_ms = 1000 });
+*p = (struct Config){ 0 };   /* reset an existing struct through a pointer */
+```
 </details>
