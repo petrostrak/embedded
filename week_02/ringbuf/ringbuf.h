@@ -11,6 +11,7 @@ typedef struct
   size_t capacity;
   size_t head, tail;
   bool full;
+  size_t count;
 } ringbuf_t;
 
 void rb_init(ringbuf_t *rb, uint8_t *storage, size_t capacity);

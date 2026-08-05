@@ -20,6 +20,7 @@ void rb_init(ringbuf_t *rb, uint8_t *storage, size_t capacity)
   rb->head = 0;
   rb->tail = 0;
   rb->full = false;
+  rb->count = 0;
 }
 
 bool rb_put(ringbuf_t *rb, uint8_t byte)
@@ -30,6 +31,7 @@ bool rb_put(ringbuf_t *rb, uint8_t byte)
   rb->buf[rb->head] = byte;
   rb->head = rb_next(rb, rb->head);
   rb->full = (rb->head == rb->tail);
+  rb->count++;
 
   return true;
 }
@@ -42,6 +44,7 @@ bool rb_get(ringbuf_t *rb, uint8_t *out)
   *out = rb->buf[rb->tail];
   rb->tail = rb_next(rb, rb->tail);
   rb->full = false;
+  rb->count--;
 
   return true;
 }
