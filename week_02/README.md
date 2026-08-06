@@ -59,7 +59,7 @@ Build the C equivalent of a Go interface and feel the difference.
 
 ### Interface
 
-- [ ] Write `io_stream.h`:
+- [x] Write `io_stream.h`:
   ```c
   typedef struct {
       int  (*read) (void *ctx, uint8_t *buf, size_t len);
@@ -67,24 +67,24 @@ Build the C equivalent of a Go interface and feel the difference.
       void  *ctx;
   } io_stream_t;
   ```
-- [ ] Note that this is a hand-rolled vtable + receiver: the function pointers are the method set, `ctx` is the receiver.
+- [x] Note that this is a hand-rolled vtable + receiver: the function pointers are the method set, `ctx` is the receiver.
 
 ### Backends
 
-- [ ] Backend 1: **memory buffer** — reads and writes against a caller-supplied `uint8_t[]`.
-- [ ] Backend 2: **stdout** — `write` goes to `fwrite`, `read` returns an error or 0.
-- [ ] Each backend has its own `ctx` struct and a constructor returning a filled-in `io_stream_t`.
+- [x] Backend 1: **memory buffer** — reads and writes against a caller-supplied `uint8_t[]`.
+- [x] Backend 2: **stdout** — `write` goes to `fwrite`, `read` returns an error or 0.
+- [x] Each backend has its own `ctx` struct and a constructor returning a filled-in `io_stream_t`.
 
 ### Consumer
 
-- [ ] Write one function that takes `io_stream_t *` and works without knowing which backend it got (e.g. `stream_write_all` or a hexdump-to-stream).
-- [ ] Run it against both backends from `main`.
+- [x] Write one function that takes `io_stream_t *` and works without knowing which backend it got (e.g. `stream_write_all` or a hexdump-to-stream).
+- [x] Run it against both backends from `main`.
 
 ## Done when
 
-- [ ] The ring buffer handles wraparound and the full/empty ambiguity, with tests proving it — not just tests that pass.
+- [x] The ring buffer handles wraparound and the full/empty ambiguity, with tests proving it — not just tests that pass.
 - [ ] You can write a function-pointer declaration and a `const`-qualified pointer declaration from memory, correctly, first try.
-- [ ] Both files are kept: the ring buffer returns in **Week 15** (UART) and **Week 21** (event queue); `io_stream_t` returns in **Week 16** (testable drivers).
+- [x] Both files are kept: the ring buffer returns in **Week 15** (UART) and **Week 21** (event queue); `io_stream_t` returns in **Week 16** (testable drivers).
 
 ---
 <details>
