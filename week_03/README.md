@@ -2,14 +2,14 @@
 
 ## Concepts
 
-- [ ] **`volatile` — what it stops the optimiser doing.** Every read in the source becomes a real load; every write becomes a real store. No caching in a register, no eliding, no reordering *of volatile accesses relative to each other*.
-- [ ] **`volatile` — what it does not give you.**
-  - [ ] Not atomicity. A `volatile uint32_t` read-modify-write is still three separate steps.
-  - [ ] Not ordering with respect to *non*-volatile accesses.
-  - [ ] Not a memory barrier — nothing is said to the CPU's store buffer or cache.
-- [ ] **`static` at file scope** — internal linkage. The closest thing C has to a lowercase Go identifier.
-- [ ] **`static` inside a function** — persistent storage, single instance, still scoped to the function. Note which section it lands in (Week 1 answer).
-- [ ] **`extern`** — declaration without definition; how a global is shared across translation units.
+- [x] **`volatile` — what it stops the optimiser doing.** Every read in the source becomes a real load; every write becomes a real store. No caching in a register, no eliding, no reordering *of volatile accesses relative to each other*.
+- [x] **`volatile` — what it does not give you.**
+  - [x] Not atomicity. A `volatile uint32_t` read-modify-write is still three separate steps.
+  - [x] Not ordering with respect to *non*-volatile accesses.
+  - [x] Not a memory barrier — nothing is said to the CPU's store buffer or cache.
+- [x] **`static` at file scope** — internal linkage. The closest thing C has to a lowercase Go identifier.
+- [x] **`static` inside a function** — persistent storage, single instance, still scoped to the function. Note which section it lands in (Week 1 answer).
+- [x] **`extern`** — declaration without definition; how a global is shared across translation units.
 - [ ] **Header guards** (`#ifndef`/`#define`/`#endif`, or `#pragma once`) and *why* they're needed.
 - [ ] **The one-definition rule.** Declarations in headers, definitions in exactly one `.c`.
 - [ ] **`const` for flash placement.** Why a `const` array can live in `.rodata` and cost no RAM, and what breaks that (e.g. `const` pointer-to-non-const, or taking a mutable alias).
