@@ -193,3 +193,71 @@ If two threads share data, use `_Atomic` / `atomic_load_explicit` / a mutex.
 The one thread-adjacent exception: `volatile sig_atomic_t` for a flag set by a signal handler, and locals that must survive `longjmp`.
 
 </details>
+
+<details>
+<summary>static</summary>
+
+## at file scope — internal linkage
+
+At file scope, `static` has **nothing to do with storage duration** (file-scope variables already live for the whole program). It controls **linkage** only: the symbol is not exported to the linker, so nothing outside this translation unit can name it.
+
+```c
+// counter.c
+static int hits;                      // invisible to other .c files
+static void bump(void) { hits++; }    // same for functions
+```
+
+Two different `.c` files can each define `static int hits;` with no collision. Drop the `static` and you get a duplicate-symbol link error.
+
+### The Go analogy, adjusted
+
+Go's privacy boundary is the **package**, which spans multiple files. C's is the **translation unit** — one `.c` file plus everything it `#include`s. So `static` is stricter: it's file-private, not package-private.
+
+C has no direct equivalent of "visible to my sibling files but not to importers". The convention is a private header (`internal.h`) that only your own `.c` files include.
+
+### Optimisation payoff
+
+Because the compiler can see *every* use of a `static` function, it can:
+
+- inline it aggressively, or
+- delete it entirely if unused (`-Wunused-function` fires on exactly this).
+
+A non-static function must be emitted in full, in case someone links against it.
+
+## inside a function — persistent storage
+
+Inside a function, `static` flips the **storage duration** instead: the variable lives for the entire program, but its *name* is only visible inside that block.
+
+```c
+int next_id(void) {
+    static int id = 0;   // initialised once, before main
+    return ++id;
+}
+```
+
+### Three consequences
+
+1. **Initialised once**, before `main` runs — not on each call. In C the initialiser must be a constant expression (unlike C++, which permits runtime init with a thread-safe guard).
+2. **One instance, shared by everything** — all callers, all threads. This makes the function non-reentrant and not thread-safe. It's exactly why `strtok` and the old `localtime` are landmines, and why the `_r` variants exist.
+3. **It's a global with a private name.** Same memory behaviour as a file-scope variable; only the scope differs.
+
+### Which section it lands in
+
+| Declaration | Section | Why |
+|---|---|---|
+| `static int id = 0;` | `.bss` | Zero-init needs no bytes in the image, just a reserved size; startup code memsets it |
+| `static int id;` | `.bss` | Uninitialised statics are guaranteed zero |
+| `static int id = 7;` | `.data` | The value 7 must be stored in the binary and copied to RAM at startup |
+| `static const char *msg = "hi";` | `.rodata` (pointer often `.data`) | On an MCU, `.rodata` can stay in flash and never cost RAM |
+
+Never the stack — that's the whole point.
+
+### Confirming it
+
+```console
+$ nm --defined-only prog.o | grep id
+0000000000000004 b id.0        # lowercase = local symbol, 'b' = .bss
+```
+
+Note the mangled name (`id.0`, or `id.1234`) — the compiler renames it so two functions can each have their own `static int id` in the same object file.
+</details>
