@@ -7,7 +7,6 @@
   - [ ] Not atomicity. A `volatile uint32_t` read-modify-write is still three separate steps.
   - [ ] Not ordering with respect to *non*-volatile accesses.
   - [ ] Not a memory barrier — nothing is said to the CPU's store buffer or cache.
-  - [ ] Write down, explicitly: `volatile` is **not** `sync/atomic`. What Go's `atomic.LoadUint32` guaranteed that this does not.
 - [ ] **`static` at file scope** — internal linkage. The closest thing C has to a lowercase Go identifier.
 - [ ] **`static` inside a function** — persistent storage, single instance, still scoped to the function. Note which section it lands in (Week 1 answer).
 - [ ] **`extern`** — declaration without definition; how a global is shared across translation units.
