@@ -261,3 +261,80 @@ $ nm --defined-only prog.o | grep id
 
 Note the mangled name (`id.0`, or `id.1234`) — the compiler renames it so two functions can each have their own `static int id` in the same object file.
 </details>
+
+<details>
+<summary>extern</summary>
+
+## declaration without definition
+
+- A **definition** allocates storage.
+- A **declaration** just promises the thing exists and gives its type so the compiler can generate code.
+
+`extern` is how you write the second without accidentally doing the first.
+
+### The standard pattern
+
+Exactly one definition, and a declaration in the header:
+
+```c
+/* config.h */
+extern int g_max_retries;        // declaration — no storage
+
+/* config.c */
+int g_max_retries = 3;           // definition — the actual bytes
+
+/* main.c */
+#include "config.h"
+if (attempts > g_max_retries) { ... }   // linker resolves the reference
+```
+
+### The classic mistake
+
+Putting `int g_max_retries = 3;` in the header. Every `.c` that includes it now defines the symbol:
+
+```
+multiple definition of 'g_max_retries'
+```
+
+Older GCC (pre-10) papered over the un-initialised variant of this with `-fcommon`, silently merging *tentative definitions* like `int g_max_retries;`. GCC 10+ defaults to `-fno-common` and errors, which is the better behaviour.
+
+### Two footnotes
+
+- **Functions are `extern` by default.** `extern void foo(void);` in a header is legal but redundant — everyone writes `void foo(void);`. The keyword only earns its keep on variables.
+- `extern` is the exact opposite pole from `static`: `static` says "this symbol stops here," `extern` says "this symbol lives elsewhere." Both are about linkage; only `static`-in-a-block is about lifetime.
+</details>
+
+## Quick reference tables - volatile, static, extern
+
+### What each keyword actually controls
+
+| Keyword / position | Linkage | Storage duration | Scope |
+|---|---|---|---|
+| `static` at file scope | Internal | Static (unchanged) | File |
+| `static` inside a function | None | **Static** (changed) | Block |
+| `extern` on a variable | External | Static | Wherever declared |
+| (nothing) at file scope | External | Static | File, but exported |
+| (nothing) inside a function | None | Automatic (stack) | Block |
+| `volatile` | *not a linkage/storage keyword* — it's a type qualifier | | |
+
+### `volatile` guarantees at a glance
+
+| Property | Provided? |
+|---|---|
+| Every source read becomes a real load | Yes |
+| Every source write becomes a real store | Yes |
+| No reordering **between** volatile accesses | Yes (compile time) |
+| No reordering vs. **non-volatile** accesses | No |
+| Atomicity of read-modify-write | No |
+| CPU memory barrier / fence | No |
+| Cache or store-buffer effects | No |
+
+### Choosing the right tool
+
+| Situation | Use |
+|---|---|
+| Memory-mapped hardware register | `volatile` |
+| Flag set by a signal handler | `volatile sig_atomic_t` |
+| Local that must survive `longjmp` | `volatile` |
+| Shared between threads | `_Atomic`, or a mutex |
+| Ordering across cores / DMA | Explicit barriers + cache maintenance |
