@@ -86,3 +86,110 @@
 - [ ] You can articulate why `volatile` is not `sync/atomic`, without hedging.
 - [ ] You can name, from memory, the UB in each of your three functions and predict what `-O2` does to it.
 - [ ] You can explain the no-`malloc` rule to someone who thinks it's just superstition.
+
+---
+
+<details>
+<summary>volatile</summary> 
+
+## what it stops the optimiser doing
+The compiler normally treats your variables as pure bookkeeping. It is free to keep `x` in a register for a whole function, delete a store nobody reads back, or notice a loop condition never changes and hoist the load out. All of that is legal because the compiler assumes it is the only thing touching that memory.
+
+`volatile` withdraws that assumption. It says: **this location can change or have effects outside the program's control flow, so do literally what I wrote.**
+
+Guarantees:
+
+- Every read in the source becomes a real load.
+- Every write in the source becomes a real store.
+- No caching in a register, no eliding, no reordering of volatile accesses **relative to each other**.
+
+### Example 1 — the disappearing poll loop
+
+```c
+// Polling a hardware status register at a fixed address
+uint32_t *status = (uint32_t *)0x4000A000;
+while (*status == 0) { }     // -O2: load once, then `while (1);`
+```
+
+The compiler sees nothing in the loop body that could change `*status`, so it reads once and spins forever. Add the qualifier and every iteration emits a real load:
+
+```c
+volatile uint32_t *status = (volatile uint32_t *)0x4000A000;
+while (*status == 0) { }     // reload each time
+```
+
+### Example 2 — the deleted store
+
+Writing twice to a register is a common hardware idiom (pulse a bit, clear it). Without `volatile` the first store is dead code:
+
+```c
+*reg = 1;
+*reg = 0;    // non-volatile: compiler deletes the first line entirely
+```
+
+### Example 3 — reads that *are* the side effect
+
+Reading a UART data register pops a byte off the FIFO. Two reads must be two reads, not one read reused:
+
+```c
+volatile uint8_t *uart_rx = (volatile uint8_t *)UART_BASE;
+uint8_t a = *uart_rx;   // byte 1
+uint8_t b = *uart_rx;   // byte 2 — without volatile, b would just reuse a
+```
+
+### Syntax trap — the qualifier binds like `const`
+
+```c
+volatile uint32_t *p;           // pointer to volatile data  <-- what you want for MMIO
+uint32_t * volatile p;          // volatile pointer, ordinary data
+volatile uint32_t * volatile p; // both
+```
+
+## what it does not give you
+
+This is where most of the real-world bugs live, because `volatile` *looks* like a concurrency tool and isn't one.
+
+### Not atomicity
+
+```c
+volatile uint32_t counter;
+counter++;    // load, add, store — three separate steps
+```
+
+An interrupt or another thread can land between any two of them and you lose an increment.
+
+- On a 32-bit ARM the individual load is atomic in practice, but the **sequence** isn't.
+- On an 8-bit AVR even the load isn't atomic — it's four byte-loads.
+
+The qualifier says *do the access*; it says nothing about *indivisibly*.
+
+### Not ordering with respect to non-volatile accesses
+
+The standard only requires that volatile accesses happen in the written order **relative to each other**. An ordinary store can be moved across a volatile one:
+
+```c
+buffer[0] = 42;        // ordinary — may be sunk below the next line
+flag = 1;              // volatile
+```
+
+So the classic "fill the buffer, then set the ready flag" pattern is **not** made safe by marking the flag volatile.
+
+### Not a memory barrier
+
+`volatile` emits no fence instruction.
+
+- Nothing is said to the store buffer.
+- Nothing invalidates a cache line.
+- Nothing prevents the CPU from reordering the two accesses at runtime even if the compiler kept them in order.
+
+On a multicore system another core can observe your stores out of order. For DMA on a non-coherent bus you additionally need explicit cache maintenance.
+
+### Rule of thumb
+
+> **`volatile` is for memory-mapped I/O. `_Atomic` is for threads.**
+
+If two threads share data, use `_Atomic` / `atomic_load_explicit` / a mutex.
+
+The one thread-adjacent exception: `volatile sig_atomic_t` for a flag set by a signal handler, and locals that must survive `longjmp`.
+
+</details>
