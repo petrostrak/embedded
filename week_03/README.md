@@ -571,3 +571,213 @@ This compiles and links cleanly — and is almost always a bug. `a.c` sets
 `mode = 1`; `b.c` still reads `0`, because they are different variables.
 Silent, and painful to debug.
 </details>
+
+<details>
+<summary>const and Flash Placement</summary>
+
+### The memory picture
+
+On a microcontroller, RAM is precious and flash is comparatively plentiful. A
+typical part might have 512 KB of flash and 64 KB of RAM. Understanding which
+section your data lands in is the difference between fitting and not fitting.
+
+| Section | Lives in | Notes |
+|---|---|---|
+| `.text` | Flash | Executable code |
+| `.rodata` | Flash | Read-only data: constants, string literals, lookup tables |
+| `.data` | RAM (+ flash) | Initialized writable data — **costs both**; see below |
+| `.bss` | RAM | Zero-initialized writable data; costs no flash |
+
+The `.data` double cost catches people out. A writable variable with a non-zero
+initial value needs RAM to live in *and* a copy of its initial value stored in
+flash, because RAM contents are undefined at power-on. The startup code copies
+flash → RAM before `main()` runs. So `.data` charges you twice.
+
+### What `const` buys you
+
+```c
+const uint16_t sine_table[256] = { 0, 402, 804, /* ... */ };
+```
+
+Because this object can never legally be written, the toolchain places it in
+`.rodata` — flash. Cost: 512 bytes of flash, **zero bytes of RAM**, and no
+startup copy. The CPU reads it directly from flash at runtime.
+
+Drop the `const`:
+
+```c
+uint16_t sine_table[256] = { 0, 402, 804, /* ... */ };
+```
+
+Now it is `.data`: 512 bytes of RAM *plus* 512 bytes of flash for the
+initializer, plus startup copy time. One keyword, 512 bytes of RAM.
+
+Scale that up. A font bitmap, a CRC table, a set of calibration curves — a few
+kilobytes of forgotten `const` is a routine cause of "why won't this link, the
+RAM is full."
+
+> **Two caveats.**
+>
+> `const` in C means "this code may not write it," not "this is immutable." The
+> placement in read-only memory is a consequence of the compiler being
+> *permitted* to assume no writes, not a guarantee written into the standard.
+> In practice, every embedded toolchain does exactly this.
+>
+> On Harvard-architecture parts — classic AVR, PIC, 8051 — plain `const` does
+> *not* get you flash placement, because code and data live in separate address
+> spaces the C model doesn't natively express. Those toolchains need `PROGMEM`
+> (AVR), `__flash`, or similar, plus special accessors to read. Everything below
+> assumes a flat address space (ARM Cortex-M, RISC-V), which is the common case
+> today.
+
+### What breaks it
+
+#### `const` in the wrong place on a pointer
+
+Pointer declarations read right-to-left, and the position of `const` changes
+everything:
+
+```c
+const char *p;          /* pointer to const char — the POINTER is writable */
+char *const p;          /* const pointer to char — the TARGET is writable */
+const char *const p;    /* both read-only */
+```
+
+Applied to a table of strings:
+
+```c
+/* Only the strings are const; the array of pointers is writable */
+const char *messages[] = { "OK", "FAIL", "BUSY" };
+```
+
+The string literals go to `.rodata`. But `messages` itself — an array of three
+pointers — is a writable array with non-zero initial values, so it lands in
+`.data`. On a 32-bit target that is 12 bytes of RAM plus 12 bytes of flash,
+silently.
+
+The fix is a second `const`:
+
+```c
+const char *const messages[] = { "OK", "FAIL", "BUSY" };
+```
+
+Now the array is itself read-only and joins the strings in flash. Zero RAM.
+
+The same trap applies to tables of function pointers, structs containing
+pointers, and any nested pointer type. **Every level needs its own `const`.** A
+struct is only fully read-only if the struct object is `const` *and* its pointer
+members are pointers-to-const.
+
+```c
+typedef struct {
+    const char *name;        /* pointer-to-const, and... */
+    void (*handler)(void);
+    uint8_t id;
+} command_t;
+
+/* ...the array itself is const, so the whole thing is in flash */
+static const command_t commands[] = {
+    { "reset",  cmd_reset,  1 },
+    { "status", cmd_status, 2 },
+};
+```
+
+#### Taking a mutable alias
+
+If you create a non-const pointer to the object, or pass its address to
+something that might write, the object may need to be writable — and the
+compiler may relocate it out of `.rodata`:
+
+```c
+const uint8_t config[16] = { /* ... */ };
+
+uint8_t *p = (uint8_t *)config;   /* casting away const */
+p[0] = 0xFF;                      /* UNDEFINED BEHAVIOUR */
+```
+
+Two things go wrong here. First, writing through a cast-away-`const` pointer to
+an object that was *defined* `const` is undefined behaviour, full stop. Second,
+on real hardware, what actually happens is usually worse than a compile error:
+the object is in flash, the store instruction fails silently or triggers a bus
+fault, and you spend an afternoon debugging. Some parts require an
+unlock-erase-program sequence and simply ignore stray writes.
+
+Related traps:
+
+- **Non-const parameters.** Passing `const` data to
+  `void process(uint8_t *buf)` requires a cast to compile, and that cast is a
+  lie. Declare read-only parameters `const uint8_t *buf` — it documents intent
+  and lets the compiler catch the mistake.
+- **Address taken and escaping.** If the address of a `const` object is passed
+  somewhere the compiler cannot analyse, it must keep the object as a real
+  addressable thing, which limits some optimizations — though it can still stay
+  in `.rodata`.
+
+#### `const` on a local variable
+
+```c
+void f(void) {
+    const int scale = 100;                    /* likely folded into an immediate */
+    const uint8_t table[64] = { /* ... */ };  /* may be built on the STACK each call */
+}
+```
+
+A `const` local is still an automatic object with automatic storage duration.
+For a scalar, the optimizer will almost certainly fold the value into the
+instruction stream and it costs nothing. For an array, the compiler often
+copies the initializer from flash onto the stack every time the function is
+entered — cost paid in stack space *and* cycles, per call.
+
+Add `static` to hoist it out of the stack and into `.rodata`:
+
+```c
+static const uint8_t table[64] = { /* ... */ };
+```
+
+`static const` at file or block scope is the reliable idiom for read-only
+tables. The `static` also gives internal linkage, so the symbol stays private
+and the linker can discard it if unused (especially with
+`-ffunction-sections -fdata-sections -Wl,--gc-sections`).
+
+#### `const volatile` — a different animal
+
+```c
+const volatile uint32_t *const STATUS_REG = (uint32_t *)0x40000000;
+```
+
+This is not about flash. `const` means *your* code won't write it; `volatile`
+means the value can change outside the program's control (hardware sets it) so
+the compiler must not cache or elide reads. Correct for a read-only hardware
+status register. It will not be placed in `.rodata` — the address is fixed by
+the peripheral map.
+
+### Verifying it, rather than hoping
+
+Never assume. Ask the toolchain.
+
+```bash
+# Section sizes: text = flash code+rodata, data = RAM w/ initializer, bss = RAM zeroed
+arm-none-eabi-size -A firmware.elf
+
+# Which section did a specific symbol land in?
+arm-none-eabi-nm --print-size firmware.elf | grep sine_table
+```
+
+In the `nm` output, the letter code tells you immediately:
+
+| Code | Meaning |
+|---|---|
+| `R` / `r` | `.rodata` — flash, no RAM. **What you want.** |
+| `D` / `d` | `.data` — RAM plus flash initializer. |
+| `B` / `b` | `.bss` — RAM, zeroed. |
+| `T` / `t` | `.text` — code in flash. |
+
+Uppercase means global (external linkage), lowercase means `static`. Seeing `D`
+where you expected `R` is the signal that a `const` is missing or misplaced.
+
+The linker map file (`-Wl,-Map=output.map`) gives the full picture: every
+symbol, its address, its size, and its section. When RAM is unexpectedly full,
+sorting the map by size in `.data` and `.bss` finds the culprit in about a
+minute.
+
+</details>
