@@ -338,3 +338,94 @@ Older GCC (pre-10) papered over the un-initialised variant of this with `-fcommo
 | Local that must survive `longjmp` | `volatile` |
 | Shared between threads | `_Atomic`, or a mutex |
 | Ordering across cores / DMA | Explicit barriers + cache maintenance |
+
+<details>
+<summary>Header Guards</summary>
+
+### The problem
+
+`#include` is not clever. It is a literal copy-paste performed by the
+preprocessor. If a header gets pasted in twice, the compiler sees everything in
+it twice.
+
+This happens constantly without anyone intending it:
+
+```c
+/* types.h */
+typedef struct { int x, y; } Point;
+
+/* sensor.h */
+#include "types.h"
+
+/* motor.h */
+#include "types.h"
+
+/* main.c */
+#include "sensor.h"
+#include "motor.h"   /* types.h now pasted twice */
+```
+
+The compiler now sees two `typedef struct { int x, y; } Point;` lines and
+reports a redefinition error. Same for `struct` definitions, `enum`s, and (in
+C++) classes and inline functions.
+
+Note that *some* things can legally repeat. Pure function declarations
+(`int foo(int);`) may appear many times, as long as they agree. So a header
+containing only prototypes might survive double inclusion by luck. Don't rely
+on luck.
+
+### The classic fix
+
+```c
+#ifndef TYPES_H
+#define TYPES_H
+
+typedef struct { int x, y; } Point;
+
+#endif /* TYPES_H */
+```
+
+Read it as: "if the symbol `TYPES_H` is not yet defined, define it and process
+everything down to `#endif`." The first inclusion defines the macro; every
+later inclusion sees it already defined and skips the whole body. The macro
+itself carries no data — it exists purely as a flag meaning *this file has
+already been seen in this translation unit*.
+
+The name must be unique across your whole project, including any library you
+pull in. A collision means one header silently vanishes and you get baffling
+"unknown type" errors. Conventions that help:
+
+- `PROJECT_MODULE_H` — e.g. `ACME_SENSOR_H`
+- Include the path: `DRIVERS_SPI_SPI_H`
+- Avoid leading underscores followed by a capital (`_TYPES_H`) — names like
+  that are reserved for the implementation.
+
+### `#pragma once`
+
+```c
+#pragma once
+
+typedef struct { int x, y; } Point;
+```
+
+Same effect, one line, no name to invent, no chance of collision. It is not in
+the C standard, but GCC, Clang, MSVC, IAR, Keil, and essentially every compiler
+you'd meet supports it.
+
+The trade-off: it works by identifying *the file*, and file identity is fuzzier
+than it sounds. Symlinks, hard links, network shares, or the same header
+reachable via two different include paths can make one file look like two,
+defeating the pragma. Compilers use inode/device numbers or content hashes to
+mitigate this, and in practice it almost always works.
+
+**Pragmatic advice:** `#pragma once` for application code, the `#ifndef` idiom
+for headers you ship to unknown compilers or that must be strictly portable.
+Some codebases use both — belt and suspenders.
+
+### What guards do *not* do
+
+A guard is per translation unit. Compiling `a.c` and `b.c` are two independent
+runs of the compiler, and the header is fully processed in each. Guards prevent
+double-*inclusion*; they do nothing about the linker seeing the same
+*definition* from two objects. That is the next topic.
+</details>
