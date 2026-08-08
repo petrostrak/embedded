@@ -13,7 +13,7 @@
 - [x] **Header guards** (`#ifndef`/`#define`/`#endif`, or `#pragma once`) and *why* they're needed.
 - [x] **The one-definition rule.** Declarations in headers, definitions in exactly one `.c`.
 - [x] **`const` for flash placement.** Why a `const` array can live in `.rodata` and cost no RAM, and what breaks that (e.g. `const` pointer-to-non-const, or taking a mutable alias).
-- [ ] **Undefined behaviour** — the largest single conceptual gap from Go. A Go program with a bug misbehaves; a C program with UB can have the bug *deleted by the optimiser*.
+- [ ] **Undefined behaviour** a C program with UB can have the bug *deleted by the optimiser*.
   - [ ] Strict aliasing — accessing an object through an incompatible pointer type.
   - [ ] Unaligned access.
   - [ ] Reading an uninitialised variable.
