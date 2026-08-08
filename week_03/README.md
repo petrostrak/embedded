@@ -830,3 +830,420 @@ static const char *msgs_bad[]         = { "OK", "ERR" }; /* .data — RAM wasted
 | RAM full, flash mostly empty | Missing `const` on lookup tables |
 | Symbol shows `D` in `nm`, expected `R` | `const` missing at an outer pointer level |
 | Write to a "constant" silently does nothing | Cast away `const`; object is in flash |
+
+<details>
+<summary>Undefined Behaviour</summary>
+
+## The core idea
+
+The C standard divides program behaviour into a few buckets. The important one here is **undefined behaviour (UB)**: constructs for which the standard imposes *no requirements at all*. Not "returns a garbage value", not "crashes" — literally no requirements.
+
+The consequence that catches people out is not that UB *might* do something bad. It is that the optimiser is **allowed to assume UB never happens**, and it uses that assumption to rewrite your code.
+
+So the reasoning goes:
+
+1. You write a check, or a loop bound, or a null test.
+2. The compiler notices that the only way to reach that code is via a path that would have been UB.
+3. Since UB "cannot happen", that path cannot happen.
+4. Therefore the check is dead code.
+5. The check is deleted.
+
+**Your bug report gets optimised away, and the bug stays.**
+
+This is why UB behaves so maliciously in practice: it usually works at `-O0`, works in the debug build, works in your unit test, and then misbehaves in the release build on a different compiler version. The code did not change. The *assumptions the optimiser was licensed to make* changed.
+
+A useful mental model: **UB is a promise you make to the compiler.** `a + b` on signed ints is you promising "this will not overflow". If you break the promise, the compiler is not lying to you — you lied to it first.
+
+## Strict aliasing
+
+### The rule in plain English
+
+An object in memory has an *effective type*. You are only allowed to read or write it through a pointer whose type is compatible with that effective type (roughly: the same type, a signed/unsigned variant of it, or `char`/`unsigned char`).
+
+The compiler exploits this to conclude **"an `int*` and a `float*` cannot point at the same bytes"**, and therefore that a write through one cannot affect a read through the other. That lets it reorder loads and stores, cache values in registers, and skip reloads.
+
+### Broken example — the classic "fast inverse square root" style type pun
+
+```c
+float bits_to_float(int i) {
+    return *(float *)&i;       /* UB: reading an int object as a float */
+}
+
+int float_to_bits(float f) {
+    return *(int *)&f;         /* UB: reading a float object as an int */
+}
+```
+
+### Broken example where the optimiser visibly eats your work
+
+```c
+int f(int *pi, float *pf) {
+    *pi = 1;
+    *pf = 2.0f;    /* if these actually alias, this overwrites *pi */
+    return *pi;    /* compiler assumes still 1, does NOT reload from memory */
+}
+```
+
+Called as `f(&x, (float*)&x)`, the "obvious" answer is whatever bit pattern `2.0f` is. The compiler is entitled to emit `return 1;` and never touch memory again. The reload — the thing that would have shown you the aliasing — is deleted.
+
+### Broken example — the "header punning" pattern
+
+```c
+struct header { uint32_t len; uint32_t type; };
+
+size_t get_len(char *buf) {
+    struct header *h = (struct header *)buf;   /* effective type of buf is char, not header */
+    return h->len;
+}
+```
+
+This one is *extremely* common in networking and parser code, and it is UB twice over — strict aliasing **and** alignment (see §2).
+
+### The fix: `memcpy`
+
+```c
+float bits_to_float(uint32_t i) {
+    float f;
+    memcpy(&f, &i, sizeof f);
+    return f;
+}
+```
+
+`memcpy` is the blessed escape hatch. It is not slow: every mainstream compiler recognises a fixed-size `memcpy` and lowers it to a single register move or load. You get the reinterpretation you wanted with none of the UB.
+
+Other legitimate routes:
+
+- **Unions** — `union { uint32_t u; float f; } u; u.u = bits; return u.f;` is well-defined in C (this is *not* true in C++).
+- **`unsigned char*` / `char*`** — always allowed to alias anything. This is why byte-wise inspection of an object is legal.
+- **`-fno-strict-aliasing`** — turns the optimisation off (Linux kernel does this). A build-flag band-aid, not a portability fix.
+
+## Unaligned access
+
+### The rule in plain English
+
+Every type has an alignment requirement — a `uint32_t` typically must live at an address divisible by 4. Creating a pointer to a type at an address that does not satisfy its alignment is UB **at the moment you form the pointer**, before you even dereference it.
+
+### Broken example
+
+```c
+uint32_t read_u32(unsigned char *p) {
+    return *(uint32_t *)(p + 1);   /* p+1 is almost certainly not 4-aligned */
+}
+```
+
+### Why "but it works on x86" is a trap
+
+x86-64 tolerates unaligned scalar loads in hardware, so this appears to work. Three things can still break it:
+
+- **ARM, RISC-V, SPARC, MIPS** — may fault outright, or silently load from the *rounded-down* address, giving you wrong data with no crash.
+- **Vectorisation.** The optimiser sees an aligned `uint32_t*`, decides a loop over it can use SIMD, and emits an instruction like `movaps` that *does* require alignment. Your scalar loop worked; the auto-vectorised version segfaults. Nothing about your source changed.
+- **Alignment-based reasoning.** The compiler knows the low bits of an aligned pointer are zero and may fold that into address arithmetic or pointer-tagging assumptions.
+
+### The fix: `memcpy` again
+
+```c
+uint32_t read_u32(const unsigned char *p) {
+    uint32_t v;
+    memcpy(&v, p, sizeof v);
+    return v;
+}
+```
+
+Or build the value explicitly, which also fixes endianness portability:
+
+```c
+uint32_t read_u32_be(const unsigned char *p) {
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16)
+         | ((uint32_t)p[2] <<  8) |  (uint32_t)p[3];
+}
+```
+
+Note how the `memcpy` fix solves strict aliasing and alignment simultaneously. That is not a coincidence — both rules exist to let the compiler reason about typed memory, and `memcpy` is the operation that means "just move bytes, make no claims".
+
+## Reading an uninitialised variable
+
+### The rule in plain English
+
+An uninitialised automatic variable has an **indeterminate value**. That is not "some specific unknown number". It is a value the compiler may treat as *whatever is most convenient at each point of use* — it need not be consistent between two reads of the same variable, because the compiler never has to commit it to memory at all.
+
+### Broken example — a variable that is two values at once
+
+```c
+#include <stdio.h>
+
+void f(void) {
+    int x;                 /* never initialised */
+    if (x > 10) puts("big");
+    if (x <= 10) puts("small");
+}
+```
+
+You expect exactly one line. You can legitimately get **both**, or **neither**. Each comparison can be independently constant-folded, because there is no requirement that they agree.
+
+### Broken example — the "leaks a secret" case
+
+```c
+struct packet p;         /* not zeroed */
+p.type = 1;
+p.len  = 4;
+send(fd, &p, sizeof p, 0);   /* padding + unset fields = old stack contents on the wire */
+```
+
+This is a real and repeated class of security bug (the Heartbleed family of "uninitialised memory disclosure"). Note that **padding bytes are indeterminate even if you initialise every named member**, so `memset` or `= {0}` is the only reliable answer here.
+
+### Broken example — the poisoned bool
+
+```c
+_Bool b;                 /* uninitialised */
+if (b) { /* ... */ } else { /* ... */ }
+```
+
+A `_Bool` is required to hold only 0 or 1. If the garbage byte is `0x2A`, you have an object holding a value its type cannot represent — a *trap representation*. Downstream code that assumes `b` is 0-or-1 (e.g. using it as an array index into a 2-element table) is now doing something arbitrary.
+
+### The fix
+
+Initialise at the point of declaration.
+
+```c
+int x = 0;
+struct packet p = {0};       /* zeroes padding too */
+```
+
+Compilers help here if you ask: `-Wuninitialized -Wmaybe-uninitialized -Werror`. Note that `-Wuninitialized` needs optimisations on in GCC to be effective, since the analysis rides on the optimiser's dataflow. There is also `-ftrivial-auto-var-init=zero` (Clang and modern GCC), which does not make the code correct but makes the failure deterministic.
+
+## Out-of-bounds array access
+
+### The rule in plain English
+
+You may index an array from `0` to `n-1`. You may also form (but not dereference) the one-past-the-end pointer, so that `for (p = a; p != a + n; ++p)` is legal. Anything beyond that — indexing, or even *computing* the address — is UB.
+
+Crucially, the compiler assumes in-bounds access and propagates that backwards.
+
+### Broken example — the off-by-one
+
+```c
+int a[10];
+for (int i = 0; i <= 10; i++)   /* writes a[10] */
+    a[i] = i;
+```
+
+The nasty version of this: `a[10]` may land on the loop counter `i` itself, resetting it and giving you an infinite loop. Or the compiler, knowing `a[i]` is in bounds, concludes `i < 10` always holds, and therefore `i <= 10` is always true — and removes the exit test entirely.
+
+### Broken example — the check the compiler deletes
+
+```c
+int table[4];
+
+int get(int i) {
+    int v = table[i];        /* compiler: therefore 0 <= i < 4 */
+    if (i < 0 || i >= 4)     /* ...therefore this is dead code */
+        return -1;
+    return v;
+}
+```
+
+The bounds check is removed. This is the canonical shape of the problem: **you wrote the safety check after the access, so the access licensed the compiler to delete the check.** The same pattern with a null test — dereference first, check for null second — is exactly the Linux kernel `tun` driver CVE-2009-1897.
+
+### Broken example — pointer arithmetic alone
+
+```c
+int a[10];
+int *p = a + 20;        /* UB already, no dereference needed */
+```
+
+### The fix
+
+Check before you access, and make the bound the single source of truth.
+
+```c
+int get(int i) {
+    if (i < 0 || (size_t)i >= sizeof table / sizeof table[0])
+        return -1;
+    return table[i];
+}
+```
+
+For loops, prefer `size_t` counters and `< n`, or iterate over pointers. Where the language offers a checked container idiom, use it.
+
+## Shifting by ≥ the width of the type
+
+### The rule in plain English
+
+For `x << n` and `x >> n`, it is UB if `n` is negative, or if `n` is greater than or equal to the width in bits of the *promoted* type of `x`.
+
+The "promoted" part is the subtle bit: operands narrower than `int` are promoted to `int` first, so shift counts are checked against `int`'s width, not the original type's.
+
+### Broken example — the mask that isn't
+
+```c
+uint64_t mask(int n) {
+    return (1 << n) - 1;    /* 1 is int: UB for n >= 32, even though result is uint64_t */
+}
+```
+
+This produces a correct-looking mask up to 31 and then falls off a cliff. The fix is to make the *shifted operand* wide enough:
+
+```c
+uint64_t mask(int n) {
+    return ((uint64_t)1 << n) - 1;   /* well-defined for n < 64 */
+}
+```
+
+### Broken example — the rotate
+
+```c
+uint32_t rotl(uint32_t x, unsigned n) {
+    return (x << n) | (x >> (32 - n));   /* n == 0 gives x >> 32: UB */
+}
+```
+
+The fix, which compilers recognise and turn into a single `rol` instruction:
+
+```c
+uint32_t rotl(uint32_t x, unsigned n) {
+    return (x << (n & 31)) | (x >> (-n & 31));
+}
+```
+
+### What the optimiser does
+
+Shift-by-too-much is UB partly because hardware disagrees: x86 masks the count to the low 5 or 6 bits (`1u << 32` gives `1`), while ARM saturates to zero (`1u << 32` gives `0`). Since the standard refuses to pick a winner, the compiler is free to constant-fold a compile-time-visible over-shift to whatever it likes — and, more importantly, to assume `n < 32` everywhere downstream, deleting your `if (n >= 32)` guard.
+
+### The signed sign-bit case
+
+Historically, `1 << 31` on a 32-bit `int` was also UB: the result is not representable in `int`, and left-shift of a signed value was specified in terms of the arithmetic value `x * 2^n`. So:
+
+```c
+int x = 1 << 31;    /* UB in C99/C11 — use 1u << 31 */
+```
+
+Left-shifting a *negative* value was likewise UB. C23 has since defined signed left shift as a plain bit shift on the two's-complement representation, and C23 mandates two's complement. But if your code must build under C11 or older, or under `-std=c99`, treat this as UB and reach for unsigned:
+
+```c
+uint32_t x = 1u << 31;    /* always fine */
+```
+
+Right-shifting a negative signed value is *implementation-defined*, not undefined — in practice always arithmetic shift, but still worth avoiding in portable code.
+
+**Rule of thumb: do bit manipulation on unsigned types.** Unsigned arithmetic is defined to wrap, unsigned has no sign bit to overflow into, and unsigned right shift is unambiguous.
+
+## Signed integer overflow — and what the optimiser does with it
+
+### The rule in plain English
+
+If a signed arithmetic operation produces a result outside the range of its type, the behaviour is undefined. Unsigned overflow is *defined* (it wraps modulo 2^N); signed overflow is not.
+
+The hardware almost certainly wraps. That is irrelevant. The optimiser does not model the hardware here — it models the standard, and the standard says overflow cannot happen. So the compiler gets to reason as if signed integers were **mathematical integers with no upper bound**.
+
+### The deleted check, exhibit A
+
+```c
+int will_overflow(int a) {
+    return a + 100 < a;    /* "did adding 100 wrap?" */
+}
+```
+
+Mathematically, `a + 100 < a` is false for all `a`. The compiler applies exactly that reasoning and emits `return 0;`. Your overflow check is now a function that never detects overflow. This is not a hypothetical — it is what GCC and Clang do at `-O2`.
+
+### The deleted check, exhibit B
+
+```c
+int is_negative_abs(int x) {
+    return abs(x) < 0;     /* true for INT_MIN, since -INT_MIN overflows */
+}
+```
+
+`abs` is documented to return a non-negative value, so the compiler folds this to `0` — and the one input where it genuinely misbehaves, `INT_MIN`, is precisely the UB case.
+
+### The infinite loop
+
+```c
+for (int i = 1; i > 0; i *= 2)
+    do_something();
+```
+
+You wrote this expecting it to terminate when `i` overflows to a negative value. The compiler reasons: `i` starts positive, doubling a positive number keeps it positive, therefore `i > 0` is invariant, therefore the exit test is dead. It emits an unconditional infinite loop.
+
+### The promoted loop bound
+
+```c
+void f(int n) {
+    for (int i = 0; i <= n; i++)   /* n == INT_MAX means i++ overflows */
+        g(i);
+}
+```
+
+Because `i` cannot overflow, the compiler may promote `i` to a 64-bit register and skip the wraparound handling — so with `n == INT_MAX` the loop runs forever rather than wrapping.
+
+### Why the compiler is allowed to be this aggressive
+
+Assuming no signed overflow is what enables genuinely valuable optimisations: strength reduction, promoting 32-bit induction variables to native 64-bit registers, proving loops terminate, simplifying array index arithmetic. Compiler authors are unwilling to give that up, so the assumption stays.
+
+### The fix
+
+Check for overflow **without** overflowing:
+
+```c
+#include <limits.h>
+
+bool add_overflows(int a, int b) {
+    if (b > 0 && a > INT_MAX - b) return true;
+    if (b < 0 && a < INT_MIN - b) return true;
+    return false;
+}
+```
+
+Or use the builtins, which compile to a single add plus a flag test:
+
+```c
+int r;
+if (__builtin_add_overflow(a, b, &r)) { /* handle */ }
+```
+
+C23 adds `<stdckdint.h>` with `ckd_add`, `ckd_sub`, `ckd_mul` for the same purpose. Alternatively, cast to unsigned to get defined wrapping, or build with `-fwrapv` to make signed overflow wrap by definition — with the caveat that you have then written code that only works on your compiler's dialect of C.
+
+## Detecting all of this
+
+Static analysis is not enough — most of these need runtime instrumentation.
+
+**UndefinedBehaviorSanitizer** catches signed overflow, bad shifts, unaligned access, and more:
+
+```sh
+cc -fsanitize=undefined -fno-sanitize-recover=all -g -O1 prog.c
+```
+
+Useful individual checks: `-fsanitize=signed-integer-overflow,shift,alignment,bounds,object-size,null,integer-divide-by-zero`.
+
+**AddressSanitizer** catches out-of-bounds on heap, stack, and globals:
+
+```sh
+cc -fsanitize=address -g -O1 prog.c
+```
+
+**MemorySanitizer** (Clang only) catches uninitialised reads — the one UBSan will not find:
+
+```sh
+clang -fsanitize=memory -fsanitize-memory-track-origins -g -O1 prog.c
+```
+
+**Warnings worth having on by default:**
+
+```sh
+-Wall -Wextra -Wstrict-aliasing=2 -Wcast-align -Wuninitialized -Wshift-overflow=2 -Wshift-count-overflow -Warray-bounds=2
+```
+
+**Practical habits, in rough order of value:**
+
+1. Run your test suite under UBSan and ASan in CI, not just locally. Sanitizers only report what you actually execute, so coverage matters.
+2. Test at `-O0` **and** `-O2`. A behaviour difference between optimisation levels is a very strong UB smell.
+3. Test with both GCC and Clang. They exploit different UB in different places.
+4. Reach for `memcpy` whenever you want to reinterpret bytes.
+5. Do bit manipulation on unsigned types.
+6. Check bounds and nullness *before* the access, never after.
+7. Initialise on declaration.
+
+## The one-line summary
+
+UB is not "the program does something weird". UB is **"the compiler is allowed to assume this line is unreachable"** — and it will use that assumption to delete the very code you wrote to catch the problem. Treat every UB construct as a promise to the optimiser, and only make promises you can keep.
+
+</details>
