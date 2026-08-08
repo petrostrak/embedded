@@ -429,3 +429,145 @@ runs of the compiler, and the header is fully processed in each. Guards prevent
 double-*inclusion*; they do nothing about the linker seeing the same
 *definition* from two objects. That is the next topic.
 </details>
+
+<details>
+<summary>The One-Definition Rule</summary>
+
+## Declaration vs definition
+
+This distinction is the whole game.
+
+A **declaration** announces that a name exists and states its type. It
+allocates nothing and generates no code. It is a promise to the compiler:
+*trust me, this exists somewhere; here's how to use it.*
+
+A **definition** actually creates the thing — reserves the storage or emits the
+machine code.
+
+```c
+extern int counter;        /* declaration: exists somewhere */
+int counter;               /* definition: here it is, reserve 4 bytes */
+
+int add(int, int);         /* declaration: prototype only */
+int add(int a, int b) {    /* definition: real code */
+    return a + b;
+}
+```
+
+You may **declare** a thing as many times as you like.
+You may **define** it exactly once in the entire program.
+
+### Why the rule exists
+
+The linker's job is to resolve every "somewhere" into a concrete address. If
+two object files each define `counter`, the linker has two candidate addresses
+and no basis for choosing — so it refuses:
+
+```
+multiple definition of `counter'
+first defined here
+```
+
+If *zero* object files define it:
+
+```
+undefined reference to `counter'
+```
+
+### The layout that follows
+
+**Header** — declarations only. Anything that can be repeated harmlessly in
+every file that includes it:
+
+```c
+/* counter.h */
+#pragma once
+
+extern int counter;                /* declaration */
+void counter_increment(void);      /* declaration */
+uint32_t counter_get(void);        /* declaration */
+
+typedef struct { int x, y; } Point;   /* type definition — allowed, see below */
+#define MAX_COUNT 100                 /* macro — preprocessor, no storage */
+```
+
+**Exactly one `.c`** — the definitions:
+
+```c
+/* counter.c */
+#include "counter.h"
+
+int counter = 0;                   /* definition: the storage lives here */
+
+void counter_increment(void) {     /* definition: the code lives here */
+    counter++;
+}
+
+uint32_t counter_get(void) {
+    return counter;
+}
+```
+
+### The classic mistake
+
+Dropping a definition into a header:
+
+```c
+/* counter.h — WRONG */
+#pragma once
+int counter = 0;     /* definition in a header! */
+```
+
+Include this from three `.c` files and you get three definitions and a link
+error. Header guards will not save you — each file was included exactly once,
+and each one correctly produced a definition. The guard did its job perfectly;
+the problem is architectural.
+
+> **Historical wrinkle:** some toolchains accept `int counter;` — no
+> initializer — in multiple files by merging them into one "common" symbol.
+> This is a legacy extension, not standard C, and GCC 10+ rejects it by default
+> with `-fno-common`. Don't depend on it.
+
+### What's legal in a header, and why
+
+The one-definition rule really has two halves. Things that occupy storage or
+emit code — variables and non-inline functions — must be defined once per
+*program*. Things that only teach the compiler about shapes and names may be
+defined once per *translation unit*, which is why they belong in headers.
+
+| Goes in a header | Reason |
+|---|---|
+| `extern` variable declarations | Declaration, no storage |
+| Function prototypes | Declaration, no code |
+| `struct` / `union` / `enum` definitions | Type info only; compiler needs the layout to generate code |
+| `typedef` | Alias only |
+| `#define` | Handled by the preprocessor, never reaches the linker |
+| `static inline` functions | Each file gets its own private copy — legal, and standard practice for small helpers |
+
+| Goes in exactly one `.c` | Reason |
+|---|---|
+| Variable definitions | Occupies RAM at one address |
+| Function bodies | Occupies flash at one address |
+| Initialized arrays and tables | Occupies memory |
+
+### `static` as an escape hatch
+
+`static` at file scope gives a definition **internal linkage** — the symbol is
+invisible outside its translation unit. Ten files can each have their own
+`static int retry_count;` with no conflict, because ten separate objects exist
+and the linker never compares them.
+
+This is why `static inline` in a header works: every including file gets a
+private definition, and small ones usually get inlined away entirely.
+
+But beware `static` on *data* in a header:
+
+```c
+/* config.h */
+static int mode = 0;    /* every including file gets its OWN copy */
+```
+
+This compiles and links cleanly — and is almost always a bug. `a.c` sets
+`mode = 1`; `b.c` still reads `0`, because they are different variables.
+Silent, and painful to debug.
+</details>
