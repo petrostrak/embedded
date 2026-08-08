@@ -1247,3 +1247,208 @@ clang -fsanitize=memory -fsanitize-memory-track-origins -g -O1 prog.c
 UB is not "the program does something weird". UB is **"the compiler is allowed to assume this line is unreachable"** — and it will use that assumption to delete the very code you wrote to catch the problem. Treat every UB construct as a promise to the optimiser, and only make promises you can keep.
 
 </details>
+
+<details>
+<summary>Why No malloc on a 40 KB Device</summary>
+
+## The core idea
+
+On a desktop, `malloc` is nearly free of consequences. You have gigabytes, an MMU that gives every process a private virtual address space, a kernel that can page things out, and an OOM killer that takes the blame when it all goes wrong. If allocation is occasionally slow, nobody notices.
+
+On a 40 KB microcontroller you have **none of that**. No MMU, no virtual memory, no swap, no supervisor to fall back on, and a total budget smaller than the icon on a desktop shortcut. The three properties that make `malloc` acceptable on a big machine are exactly the three you have lost.
+
+The result is that `malloc` stops being a convenience and becomes a source of failures that are **rare, timing-dependent, and impossible to reproduce** — the worst possible combination. The device runs fine on your desk for a week and then bricks itself in the field after eleven days of uptime.
+
+A useful framing: **on a small device, memory is a static resource to be budgeted at build time, not a dynamic resource to be negotiated at run time.** Once you accept that, most of the reasons below become obvious consequences.
+
+## Fragmentation with no compaction and no MMU
+
+### The problem in plain English
+
+Fragmentation is when you have enough total free memory but not enough *contiguous* free memory. You ask for 1 KB, there is 6 KB free, and the request still fails because the free space is scattered in 200-byte pieces between live allocations.
+
+On a desktop this is survivable for two reasons: there is so much headroom that fragmentation rarely bites, and the MMU means the OS can hand a process pages from anywhere in physical RAM and make them look contiguous in the process's virtual address space. **A microcontroller has neither.** A physical address is the only address. If the free bytes are not physically adjacent, they cannot serve your request, full stop.
+
+And there is no compaction. A garbage-collected runtime can move live objects to squeeze the holes out. C cannot: you handed out raw pointers, those pointers are held in structs and locals and possibly in an ISR's working state, and nothing may relocate them. **The holes are permanent.**
+
+### Worked example
+
+Say you have 8 KB of heap and a simple sequence of message handling:
+
+```c
+uint8_t *a = malloc(1024);   /* [a:1024                    ] free: 7168 */
+uint8_t *b = malloc(64);     /* [a:1024][b:64              ] free: 7104 */
+uint8_t *c = malloc(1024);   /* [a:1024][b:64][c:1024      ] free: 6080 */
+free(a);                     /* [ 1024 ][b:64][c:1024      ] free: 7104 */
+```
+
+You have 7104 bytes free. You now ask for a 2 KB buffer. The 1024-byte hole where `a` was is too small. The tail is large enough, so this succeeds — this time.
+
+Now run that pattern a few hundred thousand times with varying sizes, which is what a device does over days of uptime. The `b`-sized long-lived allocations act as **pins**, and the heap ends up as a comb: live 64-byte object, hole, live 64-byte object, hole. Total free memory looks healthy at 5 KB. The largest single block is 300 bytes. Your next 1 KB request fails.
+
+### Why this is so hard to test out
+
+Fragmentation is a function of the **order and lifetime pattern** of allocations, not the amount. That means:
+
+- It depends on the exact sequence of external events — packet arrival order, sensor timing, user button presses.
+- It gets worse monotonically with uptime, so a 10-minute test tells you nothing about an 11-day deployment.
+- It is not reproducible. The same firmware with the same inputs in a different order fragments differently.
+- Adding a feature elsewhere can change the pattern and shift the failure to a completely different allocation site.
+
+This is the single strongest practical argument. **You cannot prove by testing that a fragmenting system will not fail**, and on a medical or safety-relevant device, "we tested it for a while and it seemed fine" is not an argument you can put in front of an auditor.
+
+### The related hazard: heap and stack growing into each other
+
+The classic small-MCU memory map has the heap growing up from the end of `.bss` and the stack growing down from the top of RAM, with a shared gap between them.
+
+```
+0x20000000  .data  .bss   heap -->            <-- stack   0x2000A000
+```
+
+Without an MMU there is **no guard page**. If the stack grows into the heap, it silently overwrites your allocated objects. If the heap grows into the stack, `malloc` may hand you memory the stack is about to use. Either way there is no fault, no trap, and no diagnostic — just corruption that surfaces later as a wild pointer or a nonsense sensor reading. Static allocation removes the ambiguity: the linker knows exactly how much RAM is committed, and the entire remainder is stack.
+
+*Mitigations if you must have a gap:* an MPU region configured as a no-access guard band (most Cortex-M3 and above have one), or stack painting — fill the stack with a known pattern at boot and periodically check the high-water mark.
+
+## Non-deterministic allocation time
+
+### The problem in plain English
+
+`malloc` does not take a fixed amount of time. A typical implementation walks a free list looking for a block that fits, and how long that takes depends on how many blocks are on the list and where the fit happens to be. It may also coalesce adjacent free blocks, split an oversized block, or extend the heap.
+
+So the cost is somewhere between "a dozen instructions" and "hundreds of instructions, unbounded in principle". In real-time terms: `malloc` has **no useful worst-case execution time (WCET)**.
+
+### Why that is fatal in an ISR or hard-real-time path
+
+Hard real time means a deadline missed is a *failure*, not a slowdown. To make that guarantee you have to be able to add up the worst-case time of every step in the path and show the total fits inside the deadline. An operation with no WCET bound makes the sum unbounded, and the analysis collapses. It does not matter that the average case is fast — the average case is not what a guarantee is about.
+
+Worse, `malloc` gets *slower as the heap gets more fragmented*, because the free list gets longer. So your timing degrades with uptime, in lockstep with the fragmentation problem. The system that met its deadlines in testing quietly stops meeting them on day nine.
+
+### The reentrancy problem
+
+There is a second, sharper issue in an ISR: `malloc` maintains global heap metadata, so it must protect it. Two things follow.
+
+**It is generally not reentrant.** If your main loop is halfway through `malloc`, with the free list in an inconsistent intermediate state, and an interrupt fires and calls `malloc`, the second call sees corrupt metadata. The corruption may not manifest for hours.
+
+```c
+/* Don't do this. */
+void ADC_IRQHandler(void) {
+    sample_t *s = malloc(sizeof *s);   /* may reenter an in-progress malloc */
+    if (!s) return;                    /* ...and now you're silently dropping samples */
+    s->value = ADC->DR;
+    queue_push(s);
+}
+```
+
+**Making it reentrant makes it worse.** The standard fix is a lock, but in an ISR context a lock means either disabling interrupts (adding unbounded latency to *every other* interrupt in the system, including ones with tighter deadlines) or an RTOS mutex (which an ISR generally may not block on). Newlib's approach — `__malloc_lock`/`__malloc_unlock`, typically implemented as a global interrupt disable — means **any thread's `malloc` blocks every interrupt on the chip for its duration**. Your carefully tuned 10 µs interrupt latency is now hostage to heap fragmentation.
+
+### The fix in a hot path: preallocate, or use a fixed-time allocator
+
+Get the memory before you need it, outside the timing-critical path:
+
+```c
+/* Fixed pool, allocated at build time. Push/pop are O(1) and lock-free-able. */
+static sample_t sample_storage[64];
+static sample_t *free_list;
+
+void pool_init(void) {
+    for (size_t i = 0; i < 63; i++)
+        sample_storage[i].next = &sample_storage[i + 1];
+    sample_storage[63].next = NULL;
+    free_list = &sample_storage[0];
+}
+
+sample_t *pool_alloc(void) {          /* O(1), bounded, ~5 instructions */
+    sample_t *s = free_list;
+    if (s) free_list = s->next;
+    return s;
+}
+
+void pool_free(sample_t *s) {         /* O(1) */
+    s->next = free_list;
+    free_list = s;
+}
+```
+
+This is a **fixed-block pool**, and it is the workhorse of embedded memory management. Every block is the same size, so:
+
+- There is no fragmentation *by construction* — any free block satisfies any request.
+- `alloc` and `free` are a handful of instructions with a hard WCET.
+- The total footprint is visible in the linker map at build time.
+- Failure is a full pool, which is a bounded, testable condition rather than an emergent one.
+
+If you genuinely need variable sizes, a few pools of different sizes (say 32/128/512 bytes) covers most real workloads. If you need true general-purpose allocation with bounded time, **TLSF** (Two-Level Segregated Fit) is O(1) with a known constant and low fragmentation — but it is a considered engineering decision, not a default.
+
+## No OOM story: what happens when `malloc` returns `NULL` at 3 a.m.?
+
+### The problem in plain English
+
+This is the question that usually ends the argument, because there is rarely a good answer.
+
+On Linux, `malloc` failing is somebody else's problem — the OOM killer picks a victim, the process dies, systemd restarts it, and a log line appears. On a microcontroller, **you are the entire system.** There is no supervisor, no restart-and-carry-on, nobody watching. So: what does the code do?
+
+Look at the shape of the code you have to write:
+
+```c
+result_t handle_message(const msg_t *m) {
+    buffer_t *buf = malloc(m->len);
+    if (!buf)
+        return ERR_NOMEM;    /* ...and then what? */
+    /* ... */
+}
+```
+
+`return ERR_NOMEM` just moves the question up a level. Follow it all the way to the top and you end up at one of a small set of options, none of them good:
+
+- **Ignore it.** Dereference `NULL`, which on most MCUs reads the vector table rather than faulting, so you get silent garbage instead of a clean crash. This is the worst outcome and, empirically, the most common.
+- **Drop the work.** Lose the sample, discard the packet, skip the log entry. Sometimes acceptable — but you must be able to say *which* data you are willing to lose and prove the loss is safe.
+- **Retry.** Retry what? Nothing is going to free memory on your behalf. If the cause was fragmentation, retrying will fail identically forever.
+- **Reset the device.** Often the only honest answer. But a reset is a visible outage: a reboot mid-procedure, lost in-flight state, lost buffered results, an audit trail with a hole in it.
+- **Degrade to a safe state.** The correct answer for a safety-relevant device, and also the most work. You need a defined reduced-function mode and you have to have designed it in advance.
+
+### The three-in-the-morning part is the actual point
+
+The failure will not happen during your test run. It will happen after days of uptime, on one unit out of five hundred, unattended, in a state you cannot reconstruct. You will get a report that says "the device stopped responding" and you will have no core dump, no `stderr`, possibly no persistent log, and no way to reproduce it.
+
+Every allocation site is a potential failure point that has to be handled, tested, and reasoned about. On a device with a hundred `malloc` calls, that is a hundred error paths — and error paths are the least-tested code in any codebase. Most of that error-handling code has never executed even once.
+
+### The fix: make the failure impossible instead of handled
+
+If all memory is allocated statically at build time, **there is no `NULL` to check.** The linker either fits your program in RAM or it does not, and it tells you at build time, on your machine, with a clear error message. The 3 a.m. failure mode is converted into a compile error.
+
+```c
+/* Fails at build time, not at 3 a.m. */
+static uint8_t rx_buffers[MAX_CONNECTIONS][MTU];
+_Static_assert(sizeof rx_buffers < 16 * 1024, "rx buffers exceed RAM budget");
+```
+
+This is the deepest reason to avoid the heap on small devices. It is not that dynamic allocation is slow or wasteful. It is that **it moves a class of failure from build time to run time**, from your desk to the field, from deterministic to probabilistic.
+
+## Secondary reasons worth knowing
+
+**Code size.** A general-purpose `malloc`/`free` implementation is typically 1–3 KB of flash, plus per-allocation metadata overhead (commonly 4–8 bytes of header per block). On a 40 KB device, a fixed pool costs a few dozen bytes of code and zero per-block overhead.
+
+**Every allocation is a leak waiting to happen.** A desktop process leaking 100 bytes per request is fine — it exits. Firmware never exits. Any leak, however small, is fatal given enough uptime; it is just a question of whether the device dies in a day or a year. Static allocation makes leaks structurally impossible.
+
+**Certification and coding standards.** Dynamic allocation after initialisation is restricted or banned outright in most safety-relevant standards: MISRA C:2012 Directive 4.12 and Rule 21.3, DO-178C practice, IEC 61508, and the general expectation under IEC 62304 that resource usage be bounded and analysable. The reasoning in these standards is precisely the three points above — you cannot demonstrate a bound on memory or timing for a fragmenting, non-deterministic allocator.
+
+**Debuggability.** A static memory map is a linker map file you can read. Every buffer has a name, a size, and an address that is the same on every boot and in every unit. Heap corruption gives you an address that means nothing and differs between runs.
+
+## What to do instead
+
+Roughly in order of preference:
+
+1. **Static allocation.** `static` arrays sized by compile-time constants. The default. Add `_Static_assert` to enforce your budget.
+2. **Stack allocation.** Fine for short-lived, bounded-size, non-escaping data. Avoid VLAs and `alloca` — they reintroduce unbounded, unchecked growth into a region with no guard page.
+3. **Fixed-block pools.** When you need a variable *number* of same-shaped objects. O(1), no fragmentation, bounded footprint.
+4. **Ring buffers.** The right structure for streaming data — sensor samples, UART bytes, log lines. Fixed footprint, O(1), and overflow is an explicit, testable condition rather than an allocation failure.
+5. **Arena / region allocation.** Bump a pointer through a fixed static buffer, then reset the whole thing at once at a natural boundary (end of a request, end of a measurement cycle). Allocation is two instructions, there is no individual `free`, and fragmentation cannot accumulate because the arena is emptied wholesale.
+6. **Allocate once at init, never free.** If you truly need `malloc`-shaped code, call it during startup only and never release. You get the convenience with none of the fragmentation, and failure happens at boot where it is visible and testable.
+7. **A bounded-time allocator (TLSF or similar).** Last resort, deliberately chosen, with the WCET measured and the fragmentation bound documented.
+
+Practical build-time hygiene: keep `-Wl,-Map=out.map` output under review so RAM growth is visible in code review, and consider linking without a heap at all (`-Wl,--wrap=malloc`, or simply providing a `malloc` that traps) so an accidental heap dependency pulled in by a library fails loudly rather than quietly working.
+
+## The one-line summary
+
+`malloc` on a big machine is safe because an MMU hides fragmentation, spare capacity hides timing variance, and the OS owns the failure. On a 40 KB device you have none of those, so the heap converts three build-time certainties — how much memory you use, how long an operation takes, and whether it can fail — into three run-time gambles that only lose after you have shipped.
+
+</details>
