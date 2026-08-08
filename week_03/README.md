@@ -10,9 +10,9 @@
 - [x] **`static` at file scope** — internal linkage. The closest thing C has to a lowercase Go identifier.
 - [x] **`static` inside a function** — persistent storage, single instance, still scoped to the function. Note which section it lands in (Week 1 answer).
 - [x] **`extern`** — declaration without definition; how a global is shared across translation units.
-- [ ] **Header guards** (`#ifndef`/`#define`/`#endif`, or `#pragma once`) and *why* they're needed.
-- [ ] **The one-definition rule.** Declarations in headers, definitions in exactly one `.c`.
-- [ ] **`const` for flash placement.** Why a `const` array can live in `.rodata` and cost no RAM, and what breaks that (e.g. `const` pointer-to-non-const, or taking a mutable alias).
+- [x] **Header guards** (`#ifndef`/`#define`/`#endif`, or `#pragma once`) and *why* they're needed.
+- [x] **The one-definition rule.** Declarations in headers, definitions in exactly one `.c`.
+- [x] **`const` for flash placement.** Why a `const` array can live in `.rodata` and cost no RAM, and what breaks that (e.g. `const` pointer-to-non-const, or taking a mutable alias).
 - [ ] **Undefined behaviour** — the largest single conceptual gap from Go. A Go program with a bug misbehaves; a C program with UB can have the bug *deleted by the optimiser*.
   - [ ] Strict aliasing — accessing an object through an incompatible pointer type.
   - [ ] Unaligned access.
