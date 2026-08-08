@@ -1,3 +1,4 @@
+#include <stdint.h>
 #include <stdio.h>
 
 int main(void)
@@ -29,6 +30,22 @@ int main(void)
   /* cannot point to another object */
   // q = a;
   // q++;
+
+  typedef struct
+  {
+    char const *name;
+    uint8_t id;
+  } cmd_t;
+
+  static const cmd_t commands[] = {
+      {"reset", 1},
+  };
+
+  // commands[0].name = 'X'; /* error! */
+
+  char *c = commands[0].name; /* linter warning: initialising 'char *' with an
+                                 expression of type 'const char *const' */
+  c[0] = 'X';                 /* it compiles but corrupts the memory */
 
   return 0;
 }

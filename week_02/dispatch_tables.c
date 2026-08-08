@@ -12,13 +12,13 @@ struct device
   size_t offset; /* cursor; invariant: offset <= DEV_CAPACITY */
 };
 
-enum opcode
+typedef enum
 {
   OP_READ = 0,
   OP_WRITE,
   OP_ERASE,
   OP_COUNT
-};
+} opcode;
 
 /* All three share one signature so they can live in the same table. */
 static int op_read(void *ctx, uint8_t *buf, size_t len);
