@@ -781,3 +781,52 @@ sorting the map by size in `.data` and `.bss` finds the culprit in about a
 minute.
 
 </details>
+
+## Quick Reference
+
+**Header guards** stop the preprocessor from pasting the same text twice into
+one translation unit. Use `#pragma once`, or `#ifndef PROJECT_MODULE_H` when
+strict portability matters.
+
+**One-definition rule:** declarations in headers, definitions in exactly one
+`.c`. Guards operate per translation unit and cannot prevent multiple
+definitions across files — that is a design decision, not a preprocessor one.
+Types, macros, and `static inline` functions are the legitimate exceptions that
+belong in headers.
+
+**`const` for flash:** `static const` on read-only tables moves them from
+`.data` (RAM + flash + startup copy) to `.rodata` (flash only). Every level of a
+pointer or nested type needs its own `const`, or the outer object stays writable
+and stays in RAM. Never cast away `const` on a genuinely `const` object. Confirm
+with `size` and `nm` rather than trusting that it worked.
+
+### Cheat sheet
+
+```c
+/* --- header: declarations only --- */
+#pragma once
+extern int counter;                        /* declaration */
+void do_thing(void);                       /* declaration */
+typedef struct { int x, y; } Point;        /* type — fine in a header */
+#define MAX 100                            /* macro — fine in a header */
+static inline int sq(int v){ return v*v; } /* fine in a header */
+
+/* --- exactly one .c: definitions --- */
+int counter = 0;                           /* .data  — RAM + flash */
+void do_thing(void) { /* ... */ }          /* .text  — flash */
+
+/* --- read-only data: flash, zero RAM --- */
+static const uint16_t table[256]      = { /* ... */ };  /* .rodata */
+static const char *const msgs[]       = { "OK", "ERR" }; /* .rodata — note BOTH const */
+static const char *msgs_bad[]         = { "OK", "ERR" }; /* .data — RAM wasted! */
+```
+
+| Symptom | Likely cause |
+|---|---|
+| `redefinition of 'X'` | Missing header guard |
+| `multiple definition of 'x'` | Definition placed in a header |
+| `undefined reference to 'x'` | Declared but never defined, or `.c` not linked |
+| Value set in one file, unseen in another | `static` data in a shared header |
+| RAM full, flash mostly empty | Missing `const` on lookup tables |
+| Symbol shows `D` in `nm`, expected `R` | `const` missing at an outer pointer level |
+| Write to a "constant" silently does nothing | Cast away `const`; object is in flash |
