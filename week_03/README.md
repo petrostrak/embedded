@@ -13,11 +13,11 @@
 - [x] **Header guards** (`#ifndef`/`#define`/`#endif`, or `#pragma once`) and *why* they're needed.
 - [x] **The one-definition rule.** Declarations in headers, definitions in exactly one `.c`.
 - [x] **`const` for flash placement.** Why a `const` array can live in `.rodata` and cost no RAM, and what breaks that (e.g. `const` pointer-to-non-const, or taking a mutable alias).
-- [ ] **Undefined behaviour** a C program with UB can have the bug *deleted by the optimiser*.
-  - [ ] Strict aliasing — accessing an object through an incompatible pointer type.
-  - [ ] Unaligned access.
-  - [ ] Reading an uninitialised variable.
-  - [ ] Out-of-bounds array access.
+- [x] **Undefined behaviour** a C program with UB can have the bug *deleted by the optimiser*.
+  - [x] Strict aliasing — accessing an object through an incompatible pointer type.
+  - [x] Unaligned access.
+  - [x] Reading an uninitialised variable.
+  - [x] Out-of-bounds array access.
   - [ ] Shifting by ≥ the width of the type (and shifting a signed value into the sign bit).
   - [ ] Signed overflow (carried over from Week 1 — now see what the optimiser does with it).
 - [ ] **Why no `malloc` on a 40 KB device.**
