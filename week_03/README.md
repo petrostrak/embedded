@@ -18,8 +18,8 @@
   - [x] Unaligned access.
   - [x] Reading an uninitialised variable.
   - [x] Out-of-bounds array access.
-  - [ ] Shifting by ≥ the width of the type (and shifting a signed value into the sign bit).
-  - [ ] Signed overflow (carried over from Week 1 — now see what the optimiser does with it).
+  - [x] Shifting by ≥ the width of the type (and shifting a signed value into the sign bit).
+  - [x] Signed overflow (carried over from Week 1 — now see what the optimiser does with it).
 - [ ] **Why no `malloc` on a 40 KB device.**
   - [ ] Fragmentation with no compaction and no MMU.
   - [ ] Non-deterministic allocation time — unacceptable in an ISR or a hard-real-time path.
