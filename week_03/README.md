@@ -20,10 +20,10 @@
   - [x] Out-of-bounds array access.
   - [x] Shifting by ≥ the width of the type (and shifting a signed value into the sign bit).
   - [x] Signed overflow (carried over from Week 1 — now see what the optimiser does with it).
-- [ ] **Why no `malloc` on a 40 KB device.**
-  - [ ] Fragmentation with no compaction and no MMU.
-  - [ ] Non-deterministic allocation time — unacceptable in an ISR or a hard-real-time path.
-  - [ ] No OOM story: what does your firmware *do* when `malloc` returns `NULL` at 3 a.m.?
+- [x] **Why no `malloc` on a 40 KB device.**
+  - [x] Fragmentation with no compaction and no MMU.
+  - [x] Non-deterministic allocation time — unacceptable in an ISR or a hard-real-time path.
+  - [x] No OOM story: what does your firmware *do* when `malloc` returns `NULL` at 3 a.m.?
 
 ## Project A — Make the optimiser lie to you
 
