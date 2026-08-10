@@ -29,21 +29,21 @@
 
 ### Setup
 
-- [ ] `flag.c` — defines a global flag and a function that sets it.
-- [ ] `main.c` — polls the global in a loop, e.g. `while (!ready) { }`, then does something observable.
-- [ ] Two translation units on purpose, so the compiler can't see the whole program.
+- [x] `flag.c` — defines a global flag and a function that sets it.
+- [x] `main.c` — polls the global in a loop, e.g. `while (!ready) { }`, then does something observable.
+- [x] Two translation units on purpose, so the compiler can't see the whole program.
 
 ### Observe the hoist
 
-- [ ] Build at `-O0`:
+- [x] Build at `-O0`:
   ```
   gcc -O0 -Wall -Wextra -Werror -std=c11 main.c flag.c -o poll_O0
   ```
-- [ ] Build at `-O2`:
+- [x] Build at `-O2`:
   ```
   gcc -O2 -Wall -Wextra -Werror -std=c11 main.c flag.c -o poll_O2
   ```
-- [ ] `objdump -d poll_O0` and `objdump -d poll_O2` — save both listings.
+- [x] `objdump -d poll_O0` and `objdump -d poll_O2` — save both listings.
 - [ ] Find where `-O2` hoisted the load out of the loop. Record the loop body at each level.
   - [ ] Note whether `-O2` produced an infinite loop with *no memory access at all*.
 
