@@ -44,8 +44,8 @@
   gcc -O2 -Wall -Wextra -Werror -std=c11 main.c flag.c -o poll_O2
   ```
 - [x] `objdump -d poll_O0` and `objdump -d poll_O2` — save both listings.
-- [ ] Find where `-O2` hoisted the load out of the loop. Record the loop body at each level.
-  - [ ] Note whether `-O2` produced an infinite loop with *no memory access at all*.
+- [x] Find where `-O2` hoisted the load out of the loop. Record the loop body at each level.
+  - [x] Note whether `-O2` produced an infinite loop with *no memory access at all*.
 
 ### Add `volatile`
 
