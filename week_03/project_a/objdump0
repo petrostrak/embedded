@@ -1,0 +1,70 @@
+poll_O0:        file format mach-o arm64
+
+Disassembly of section __TEXT,__text:
+
+0000000100003eb0 <_main>:
+100003eb0: ff 83 00 d1  sub     sp, sp, #32
+100003eb4: fd 7b 01 a9  stp     x29, x30, [sp, #16]
+100003eb8: fd 43 00 91  add     x29, sp, #16
+100003ebc: bf c3 1f b8  stur    wzr, [x29, #-4]
+100003ec0: c0 01 80 52  mov     w0, #14
+100003ec4: 01 00 00 90  adrp    x1, 0x100003000 <_main+0x14>
+100003ec8: 21 d0 3c 91  add     x1, x1, #3892
+100003ecc: 2f 00 00 94  bl      0x100003f88 <_signal+0x100003f88>
+100003ed0: 20 00 80 52  mov     w0, #1
+100003ed4: 24 00 00 94  bl      0x100003f64 <_signal+0x100003f64>
+100003ed8: 00 00 00 90  adrp    x0, 0x100003000 <_main+0x28>
+100003edc: 00 50 3e 91  add     x0, x0, #3988
+100003ee0: 27 00 00 94  bl      0x100003f7c <_signal+0x100003f7c>
+100003ee4: 08 00 00 b0  adrp    x8, 0x100004000 <_main+0x38>
+100003ee8: 08 01 40 f9  ldr     x8, [x8]
+100003eec: 00 01 40 f9  ldr     x0, [x8]
+100003ef0: 20 00 00 94  bl      0x100003f70 <_signal+0x100003f70>
+100003ef4: 01 00 00 14  b       0x100003ef8 <_main+0x48>
+100003ef8: 28 00 00 b0  adrp    x8, 0x100008000 <_main+0x5c>
+100003efc: 08 01 00 91  add     x8, x8, #0
+100003f00: 08 01 40 b9  ldr     w8, [x8]
+100003f04: 08 01 00 71  subs    w8, w8, #0
+100003f08: e8 07 9f 1a  cset    w8, ne
+100003f0c: 68 00 00 37  tbnz    w8, #0, 0x100003f18 <_main+0x68>
+100003f10: 01 00 00 14  b       0x100003f14 <_main+0x64>
+100003f14: f9 ff ff 17  b       0x100003ef8 <_main+0x48>
+100003f18: 00 00 00 90  adrp    x0, 0x100003000 <_main+0x68>
+100003f1c: 00 7c 3e 91  add     x0, x0, #3999
+100003f20: 17 00 00 94  bl      0x100003f7c <_signal+0x100003f7c>
+100003f24: 00 00 80 52  mov     w0, #0
+100003f28: fd 7b 41 a9  ldp     x29, x30, [sp, #16]
+100003f2c: ff 83 00 91  add     sp, sp, #32
+100003f30: c0 03 5f d6  ret
+
+0000000100003f34 <_on_alarm>:
+100003f34: ff 83 00 d1  sub     sp, sp, #32
+100003f38: fd 7b 01 a9  stp     x29, x30, [sp, #16]
+100003f3c: fd 43 00 91  add     x29, sp, #16
+100003f40: a0 c3 1f b8  stur    w0, [x29, #-4]
+100003f44: 04 00 00 94  bl      0x100003f54 <_set_ready>
+100003f48: fd 7b 41 a9  ldp     x29, x30, [sp, #16]
+100003f4c: ff 83 00 91  add     sp, sp, #32
+100003f50: c0 03 5f d6  ret
+
+0000000100003f54 <_set_ready>:
+100003f54: 29 00 00 b0  adrp    x9, 0x100008000 <_signal+0x100003f68>
+100003f58: 28 00 80 52  mov     w8, #1
+100003f5c: 28 01 00 b9  str     w8, [x9]
+100003f60: c0 03 5f d6  ret
+
+Disassembly of section __TEXT,__stubs:
+
+0000000100003f64 <__stubs>:
+100003f64: 10 00 00 b0  adrp    x16, 0x100004000 <__stubs+0x4>
+100003f68: 10 06 40 f9  ldr     x16, [x16, #8]
+100003f6c: 00 02 1f d6  br      x16
+100003f70: 10 00 00 b0  adrp    x16, 0x100004000 <__stubs+0x10>
+100003f74: 10 0a 40 f9  ldr     x16, [x16, #16]
+100003f78: 00 02 1f d6  br      x16
+100003f7c: 10 00 00 b0  adrp    x16, 0x100004000 <__stubs+0x1c>
+100003f80: 10 0e 40 f9  ldr     x16, [x16, #24]
+100003f84: 00 02 1f d6  br      x16
+100003f88: 10 00 00 b0  adrp    x16, 0x100004000 <__stubs+0x28>
+100003f8c: 10 12 40 f9  ldr     x16, [x16, #32]
+100003f90: 00 02 1f d6  br      x16
