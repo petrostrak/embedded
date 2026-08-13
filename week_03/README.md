@@ -49,10 +49,10 @@
 
 ### Add `volatile`
 
-- [ ] Qualify the flag `volatile` in both the definition and the `extern` declaration.
-- [ ] Rebuild at `-O2`, `objdump -d`, and diff against the previous listing.
-- [ ] Write down the **exact instructions that changed** — not "it got slower", the actual load that reappeared inside the loop.
-- [ ] Answer in a comment: what did `volatile` buy you here, and what bug would still exist if two writers incremented this flag?
+- [x] Qualify the flag `volatile` in both the definition and the `extern` declaration.
+- [x] Rebuild at `-O2`, `objdump -d`, and diff against the previous listing.
+- [x] Write down the **exact instructions that changed** — not "it got slower", the actual load that reappeared inside the loop.
+- [x] Answer in a comment: what did `volatile` buy you here, and what bug would still exist if two writers incremented this flag?
 
 ## Project B — Three functions, three UBs
 
