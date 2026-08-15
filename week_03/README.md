@@ -56,36 +56,36 @@
 
 ## Project B — Three functions, three UBs
 
-- [ ] Function 1: one specific UB (e.g. strict aliasing violation via a `float*`/`uint32_t*` pun).
-- [ ] Function 2: one specific UB (e.g. shift by ≥ width, or signed overflow).
-- [ ] Function 3: one specific UB (e.g. out-of-bounds read, or uninitialised read).
-- [ ] Each function isolated, each returning something the caller prints so behaviour is observable.
+- [x] Function 1: one specific UB (e.g. strict aliasing violation via a `float*`/`uint32_t*` pun).
+- [x] Function 2: one specific UB (e.g. shift by ≥ width, or signed overflow).
+- [x] Function 3: one specific UB (e.g. out-of-bounds read, or uninitialised read).
+- [x] Each function isolated, each returning something the caller prints so behaviour is observable.
 
 ### Two builds
 
-- [ ] Sanitised:
+- [x] Sanitised:
   ```
   gcc -O1 -g -fsanitize=undefined,address -std=c11 ub.c -o ub_san
   ```
-- [ ] Optimised, no sanitisers:
+- [x] Optimised, no sanitisers:
   ```
   gcc -O2 -std=c11 ub.c -o ub_O2
   ```
-- [ ] Run both. Document, per function, where the behaviour diverges.
+- [x] Run both. Document, per function, where the behaviour diverges.
 
 ### The lesson case
 
-- [ ] Include at least one case where **the optimiser removes a check you wrote** — e.g. a post-hoc overflow test, or a `NULL` check after a dereference.
-- [ ] Confirm it in the disassembly: the branch is simply absent.
-- [ ] Write the one-line takeaway: the compiler is allowed to assume UB never happens, so any code whose only purpose is to detect UB is dead code.
-- [ ] Note why `-Wall -Wextra` did **not** save you here.
+- [x] Include at least one case where **the optimiser removes a check you wrote** — e.g. a post-hoc overflow test, or a `NULL` check after a dereference.
+- [x] Confirm it in the disassembly: the branch is simply absent.
+- [x] Write the one-line takeaway: the compiler is allowed to assume UB never happens, so any code whose only purpose is to detect UB is dead code.
+- [x] Note why `-Wall -Wextra` did **not** save you here.
 
 ## Done when
 
-- [ ] You can point at generated assembly and explain what `volatile` bought you, instruction by instruction.
-- [ ] You can articulate why `volatile` is not `sync/atomic`, without hedging.
-- [ ] You can name, from memory, the UB in each of your three functions and predict what `-O2` does to it.
-- [ ] You can explain the no-`malloc` rule to someone who thinks it's just superstition.
+- [x] You can point at generated assembly and explain what `volatile` bought you, instruction by instruction.
+- [x] You can articulate why `volatile` is not `sync/atomic`, without hedging.
+- [x] You can name, from memory, the UB in each of your three functions and predict what `-O2` does to it.
+- [x] You can explain the no-`malloc` rule to someone who thinks it's just superstition.
 
 ---
 
