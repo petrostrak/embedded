@@ -429,3 +429,338 @@ x = (x & ~mask) | ((value << n) & mask);
 - Use `<stdint.h>` fixed-width types (`uint32_t`, `uint64_t`) for hardware
   registers and wire formats.
 </details>
+
+<details>
+<summary>Multi-bit fields</summary>
+
+A single bit is a flag. A **multi-bit field** is a group of adjacent bits that hold
+one number. Example: bits 4 to 11 of a 32-bit register hold a prescaler value from
+0 to 255.
+
+Two numbers define a field:
+
+| Property | Meaning |
+|---|---|
+| **Shift** | The position of the lowest bit of the field. |
+| **Width** | The number of bits in the field. |
+
+From these two numbers you make the **mask**: a value with a 1 in every bit that
+belongs to the field, and a 0 everywhere else.
+
+```c
+/* width ones, moved into position */
+mask = ((1u << width) - 1u) << shift;
+```
+
+Step by step, for width = 8 and shift = 4:
+
+```
+1u << 8            = 0x00000100
+0x100 - 1          = 0x000000FF   /* 8 ones at the bottom */
+0xFF << 4          = 0x00000FF0   /* the ones moved into position */
+```
+
+**Practical advice:** write the mask as a hex constant in your header. It is easier
+to read, and the compiler does no work at run time.
+
+```c
+#define TIMER_PRESCALER_MASK  0x00000FF0u   /* bits 4-11 */
+```
+
+## The Example Register
+
+The examples below use this 32-bit control register.
+
+```
+ 31            28 27                    16 15  14 13 12 11           4 3  2 1  0
++----------------+------------------------+------+-----+--------------+--+--+----+
+|    reserved    |         RELOAD         | rsvd |CLKSR|  PRESCALER   |IE|EN|MODE|
++----------------+------------------------+------+-----+--------------+--+--+----+
+```
+
+```c
+#include <stdint.h>
+
+#define TIMER_MODE_MASK        0x00000003u   /* bits 0-1,   width 2  */
+#define TIMER_ENABLE_MASK      0x00000004u   /* bit  2,     width 1  */
+#define TIMER_IRQ_EN_MASK      0x00000008u   /* bit  3,     width 1  */
+#define TIMER_PRESCALER_MASK   0x00000FF0u   /* bits 4-11,  width 8  */
+#define TIMER_CLKSRC_MASK      0x00003000u   /* bits 12-13, width 2  */
+#define TIMER_RELOAD_MASK      0x0FFF0000u   /* bits 16-27, width 12 */
+```
+
+## Read a Field
+
+Move the field down to bit 0, then remove everything else.
+
+```c
+uint32_t prescaler = (reg >> 4) & 0xFFu;
+```
+
+Shift first, then mask. If you mask first you must use the positioned mask, which
+gives the same answer with more steps.
+
+```c
+/* generic form */
+#define FIELD_READ(reg, shift, width) \
+    (((uint32_t)(reg) >> (shift)) & ((1u << (width)) - 1u))
+```
+
+## Write a Field — Read, Modify, Write
+
+You cannot write a field on its own. A field is part of a word, so you must write
+the whole word. Therefore you do three things:
+
+1. **Read** the current word.
+2. **Modify** your copy: clear the old field, then OR in the new field.
+3. **Write** the whole word back.
+
+```c
+uint32_t tmp = reg;                          /* 1. read              */
+tmp &= ~TIMER_PRESCALER_MASK;                /* 2a. clear old field  */
+tmp |= (new_value << 4) & TIMER_PRESCALER_MASK;  /* 2b. OR in new field */
+reg = tmp;                                   /* 3. write             */
+```
+
+The `&= ~mask` step is what protects the other fields. Every bit outside the mask
+keeps its old value, including reserved bits you must not disturb.
+
+**Do not skip the clear.** `reg |= value << 4` can only set bits to 1. It can never
+return a bit to 0, so you cannot lower the prescaler with it.
+
+## Why You Mask *After* the Shift
+
+This is the rule that prevents the worst bugs.
+
+If the caller gives a value that is too large for the width, the shift moves the
+extra high bits into the **next field**. The mask after the shift cuts those bits
+off.
+
+### Worked example
+
+Start with `reg = 0x00A02001`. The clock source (bits 12-13) is 2.
+
+Now write `prescaler = 0x1FF`. That needs 9 bits, but the field is only 8 bits wide.
+
+**Without the mask:**
+
+```
+0x1FF << 4                   = 0x00001FF0
+reg with field cleared       = 0x00A02001
+0x00A02001 | 0x00001FF0      = 0x00A03FF1
+                                      ^
+                     bit 12 is now set - CLKSRC changed 2 -> 3
+```
+
+The timer now runs from the wrong clock. The bug appears far away from this line.
+
+**With the mask:**
+
+```
+0x1FF << 4                   = 0x00001FF0
+0x00001FF0 & 0x00000FF0      = 0x00000FF0   /* bit 12 removed */
+0x00A02001 | 0x00000FF0      = 0x00A02FF1
+                     CLKSRC is still 2
+```
+
+The prescaler is still wrong (it holds 0xFF, not 0x1FF), but the damage stays
+inside the field. A wrong value in one field is a small bug. A silently corrupted
+neighbouring field is a long debugging session.
+
+**Summary:** the mask does not make a bad value good. It stops a bad value from
+spreading.
+
+### One mask, two jobs
+
+Note that the same constant does the clear (`& ~mask`) and the limit (`& mask`).
+This is the reason to prefer masking after the shift instead of masking the raw
+value with a separate width mask. One constant cannot get out of step with itself.
+
+## Reusable Macros
+
+### Version A — explicit shift and width
+
+Clear to read, but you must keep two numbers correct for each field.
+
+```c
+#define FIELD_MASK(shift, width) \
+    (((1u << (width)) - 1u) << (shift))
+
+#define FIELD_GET(reg, shift, width) \
+    (((uint32_t)(reg) >> (shift)) & ((1u << (width)) - 1u))
+
+#define FIELD_PREP(shift, width, val) \
+    (((uint32_t)(val) << (shift)) & FIELD_MASK((shift), (width)))
+
+#define FIELD_MODIFY(reg, shift, width, val) \
+    ((reg) = ((uint32_t)(reg) & ~FIELD_MASK((shift), (width))) \
+             | FIELD_PREP((shift), (width), (val)))
+```
+
+### Version B — mask only (recommended)
+
+The mask alone already contains the shift and the width. You can extract the shift
+from the mask, so the mask becomes the single source of truth. This is the style the
+Linux kernel uses.
+
+```c
+/* isolates the lowest set bit: 0x00000FF0 -> 0x00000010 */
+#define LOWBIT(mask)  ((uint32_t)(mask) & (~(uint32_t)(mask) + 1u))
+
+/* multiply by the lowest bit == shift left; divide == shift right */
+#define FIELD_GET(mask, reg) \
+    (((uint32_t)(reg) & (uint32_t)(mask)) / LOWBIT(mask))
+
+#define FIELD_PREP(mask, val) \
+    (((uint32_t)(val) * LOWBIT(mask)) & (uint32_t)(mask))
+
+#define FIELD_MODIFY(reg, mask, val) \
+    ((reg) = ((uint32_t)(reg) & ~(uint32_t)(mask)) | FIELD_PREP((mask), (val)))
+```
+
+The multiply and divide look expensive. They are not. For a constant mask the
+compiler turns them into a shift. The advantage is that this works in plain C,
+with no compiler extension such as `__builtin_ctz`.
+
+Usage:
+
+```c
+uint32_t reg = 0x00A02001u;
+
+FIELD_MODIFY(reg, TIMER_PRESCALER_MASK, 42u);
+FIELD_MODIFY(reg, TIMER_CLKSRC_MASK, 1u);
+
+uint32_t p = FIELD_GET(TIMER_PRESCALER_MASK, reg);   /* 42 */
+```
+
+## Hardware Registers
+
+For a memory-mapped register you must add `volatile`. Without it the compiler can
+remove or reorder your accesses.
+
+```c
+static inline void reg_modify(volatile uint32_t *reg,
+                              uint32_t mask,
+                              uint32_t val)
+{
+    uint32_t tmp = *reg;                        /* read   */
+    tmp &= ~mask;                               /* clear  */
+    tmp |= (val * LOWBIT(mask)) & mask;         /* insert */
+    *reg = tmp;                                 /* write  */
+}
+```
+
+Keep the read in a local variable. Do not write `*reg = (*reg & ~mask) | ...`,
+because that reads the hardware twice.
+
+### Write all fields in one operation
+
+Each read-modify-write is one read and one write on the bus. If you must set five
+fields, build the word first and write it once.
+
+```c
+uint32_t cfg = FIELD_PREP(TIMER_MODE_MASK,      2u)
+             | FIELD_PREP(TIMER_PRESCALER_MASK, 42u)
+             | FIELD_PREP(TIMER_CLKSRC_MASK,    1u)
+             | FIELD_PREP(TIMER_RELOAD_MASK,    1000u)
+             | TIMER_IRQ_EN_MASK;
+
+*TIMER_CTRL = cfg;      /* one write, no intermediate states */
+```
+
+This also avoids illegal intermediate states. Some hardware reacts to every write.
+
+## Traps
+
+### Shift by the full width of the type
+
+`1u << 32` on a 32-bit `unsigned int` is **undefined behaviour**. A field that fills
+the whole word breaks the standard mask formula.
+
+```c
+/* WRONG when width == 32 */
+mask = ((1u << width) - 1u) << shift;
+
+/* safe for width 1..32 */
+mask = (0xFFFFFFFFu >> (32u - width)) << shift;
+```
+
+### Signed shift
+
+`1 << 31` is undefined behaviour, because the result does not fit in a signed
+`int`. Always use unsigned literals: `1u << 31`. Give all your mask constants a
+`u` suffix.
+
+### Integer promotion with small types
+
+Anything smaller than `int` is promoted to `int` before the operation. The `~`
+operator then works on 32 bits, not 8 or 16.
+
+```c
+uint16_t reg = 0xF0F0u;
+
+if (~reg == 0x0F0Fu) { }        /* FALSE: ~reg is int 0xFFFF0F0F */
+if ((uint16_t)~reg == 0x0F0Fu) { }   /* TRUE */
+```
+
+Assignment back into a `uint16_t` truncates, so `reg &= ~mask;` is usually correct
+by accident. Comparisons and shifts are where it bites. Cast the result explicitly
+and enable `-Wconversion`.
+
+### Read-modify-write is not atomic
+
+Three separate steps. An interrupt or a second core can change the register between
+your read and your write. Your write then destroys their change.
+
+Options:
+- Disable interrupts around the sequence (short critical section).
+- Use the hardware's dedicated set / clear registers, if it has them.
+- Use `atomic_fetch_and` / `atomic_fetch_or` from `<stdatomic.h>` for normal memory.
+
+### Write-1-to-clear registers
+
+Read-modify-write is **wrong** for these. If a status bit reads as 1 and you write
+the word back unchanged, you clear that bit. Write a fresh value with only the bits
+you want to clear.
+
+### Reserved bits
+
+Read-modify-write preserves them, which is what most datasheets require. Do not
+replace it with a blind full-word write unless the datasheet tells you the reset
+value of every reserved bit.
+
+### Signed fields
+
+A field can hold a two's complement number. A plain shift-and-mask gives you an
+unsigned value, so you must extend the sign yourself.
+
+```c
+static inline int32_t field_get_signed(uint32_t reg,
+                                       uint32_t shift,
+                                       uint32_t width)
+{
+    uint32_t raw  = (reg >> shift) & ((1u << width) - 1u);
+    uint32_t sign = 1u << (width - 1u);
+    return (int32_t)((raw ^ sign) - sign);
+}
+```
+
+## Catch Oversized Values Early
+
+The mask contains the damage. It does not report the bug. Add a check.
+
+Compile time, for constant values:
+
+```c
+#define FIELD_FITS(mask, val) \
+    ((((uint32_t)(val) * LOWBIT(mask)) & ~(uint32_t)(mask)) == 0u)
+
+_Static_assert(FIELD_FITS(TIMER_PRESCALER_MASK, 42u), "prescaler too large");
+```
+
+Run time, for computed values:
+
+```c
+assert(FIELD_FITS(TIMER_PRESCALER_MASK, prescaler));
+```
+</details>
