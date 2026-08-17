@@ -380,44 +380,6 @@ static inline uint64_t bit_toggle(uint64_t x, unsigned n) { return x ^  (UINT64_
 static inline bool     bit_test(uint64_t x, unsigned n)   { return (x >> n) & 1U; }
 ```
 
-## A worked example: a flags register
-
-```c
-#include <stdint.h>
-#include <stdio.h>
-
-#define FLAG_READY    (1U << 0)
-#define FLAG_ERROR    (1U << 1)
-#define FLAG_BUSY     (1U << 2)
-#define FLAG_VERBOSE  (1U << 7)
-
-int main(void)
-{
-    uint8_t status = 0;
-
-    status |=  FLAG_READY;              // set
-    status |=  FLAG_BUSY;               // set
-    printf("%02X\n", status);           // 05   -> 0000 0101
-
-    status &= ~FLAG_BUSY;               // clear
-    printf("%02X\n", status);           // 01   -> 0000 0001
-
-    status ^=  FLAG_VERBOSE;            // toggle on
-    printf("%02X\n", status);           // 81   -> 1000 0001
-
-    if (status & FLAG_READY) {          // test
-        puts("ready");
-    }
-    if (!(status & FLAG_ERROR)) {       // test for "clear"
-        puts("no error");
-    }
-    return 0;
-}
-```
-
-Named constants are better than raw numbers. `status |= FLAG_BUSY` says what
-the code does. `status |= 4` does not.
-
 ## Multi-bit masks
 
 The same four operators work on masks with several bits.
