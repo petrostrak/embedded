@@ -2,8 +2,8 @@
 
 ## Concepts
 
-- [ ] **Set / clear / toggle / test a single bit.** `|= mask`, `&= ~mask`, `^= mask`, `& mask`.
-  - [ ] Note why the shift base should be `1UL` (or `1U`) and not `1`.
+- [x] **Set / clear / toggle / test a single bit.** `|= mask`, `&= ~mask`, `^= mask`, `& mask`.
+  - [x] Note why the shift base should be `1UL` (or `1U`) and not `1`.
 - [ ] **Multi-bit fields.** Mask, shift, read-modify-write. Build the field value, clear the old field, OR the new one in.
   - [ ] Mask *after* shifting so an oversized value can't spill into neighbouring fields.
 - [ ] **Why read-modify-write on a hardware register is a race.** Three bus accesses; an interrupt (or another master) landing between the read and the write loses its change.
