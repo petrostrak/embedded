@@ -246,8 +246,6 @@ if ((x & MASK) == 0)   // correct
 
 Always put parentheses around a bitwise expression before you compare it.
 
----
-
 ## Why `1UL` (or `1U`) and not `1`?
 
 The literal `1` has type `int`. On most platforms, `int` is **32-bit and
