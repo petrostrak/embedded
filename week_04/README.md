@@ -657,6 +657,26 @@ uint32_t cfg = FIELD_PREP(TIMER_MODE_MASK,      2u)
 *TIMER_CTRL = cfg;      /* one write, no intermediate states */
 ```
 
+Each `FIELD_PREP` produces a word that is empty except for its own field. OR then merges them, 
+because no two of them have a 1 in the same bit position.
+
+```
+FIELD_PREP(TIMER_MODE_MASK,      2u)   ->  0x00000002
+FIELD_PREP(TIMER_PRESCALER_MASK, 42u)  ->  0x000002A0
+FIELD_PREP(TIMER_CLKSRC_MASK,    1u)   ->  0x00001000
+FIELD_PREP(TIMER_RELOAD_MASK,    1000u)->  0x03E80000
+TIMER_IRQ_EN_MASK                      ->  0x00000008
+
+
+MODE        0000 0000 0000 0000 0000 0000 0000 0010  (2)
+PRESCALER   0000 0000 0000 0000 0000 0010 1010 0000  (42)      
+CLKSRC      0000 0000 0000 0000 0001 0000 0000 0000  (1)
+RELOAD      0000 0011 1110 1000 0000 0000 0000 0000  (1000)
+IRQ_EN      0000 0000 0000 0000 0000 0000 0000 1000  (1)
+            ------------------- OR -------------------
+cfg         0000 0011 1110 1000 0001 0010 1010 1010    = 0x03E812AA
+```
+
 This also avoids illegal intermediate states. Some hardware reacts to every write.
 
 ## Catch Oversized Values Early
