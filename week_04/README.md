@@ -4,8 +4,8 @@
 
 - [x] **Set / clear / toggle / test a single bit.** `|= mask`, `&= ~mask`, `^= mask`, `& mask`.
   - [x] Note why the shift base should be `1UL` (or `1U`) and not `1`.
-- [ ] **Multi-bit fields.** Mask, shift, read-modify-write. Build the field value, clear the old field, OR the new one in.
-  - [ ] Mask *after* shifting so an oversized value can't spill into neighbouring fields.
+- [x] **Multi-bit fields.** Mask, shift, read-modify-write. Build the field value, clear the old field, OR the new one in.
+  - [x] Mask *after* shifting so an oversized value can't spill into neighbouring fields.
 - [ ] **Why read-modify-write on a hardware register is a race.** Three bus accesses; an interrupt (or another master) landing between the read and the write loses its change.
   - [ ] Atomic set/reset registers exist for exactly this. On the F3's GPIO: `BSRR` (set/reset, one write) and `BRR` (reset only).
   - [ ] Note which registers you *must* still RMW (e.g. `MODER`), and how you protect those instead.
@@ -540,42 +540,21 @@ return a bit to 0, so you cannot lower the prescaler with it.
 
 ## Why You Mask *After* the Shift
 
-This is the rule that prevents the worst bugs.
-
-If the caller gives a value that is too large for the width, the shift moves the
-extra high bits into the **next field**. The mask after the shift cuts those bits
-off.
-
-### Worked example
-
-Start with `reg = 0x00A02001`. The clock source (bits 12-13) is 2.
-
-Now write `prescaler = 0x1FF`. That needs 9 bits, but the field is only 8 bits wide.
-
-**Without the mask:**
+The `& mask` is what makes the OR safe. It restricts the OR to exactly the bits the clear step prepared.
+Same code, but suppose `new_value` is 0x155 — nine bits, one too many:
 
 ```
-0x1FF << 4                   = 0x00001FF0
-reg with field cleared       = 0x00A02001
-0x00A02001 | 0x00001FF0      = 0x00A03FF1
-                                      ^
-                     bit 12 is now set - CLKSRC changed 2 -> 3
+new_value << 4       0001 0101 0101 0000    0x00001550
+                        ^ bit 12: belongs to CLKSRC
+TIMER_PRESCALER_MASK 0000 1111 1111 0000    0x00000FF0
+AND                  ---------------------
+result               0000 0101 0101 0000    0x00000550
+                        ^ removed
 ```
 
-The timer now runs from the wrong clock. The bug appears far away from this line.
-
-**With the mask:**
-
-```
-0x1FF << 4                   = 0x00001FF0
-0x00001FF0 & 0x00000FF0      = 0x00000FF0   /* bit 12 removed */
-0x00A02001 | 0x00000FF0      = 0x00A02FF1
-                     CLKSRC is still 2
-```
-
-The prescaler is still wrong (it holds 0xFF, not 0x1FF), but the damage stays
-inside the field. A wrong value in one field is a small bug. A silently corrupted
-neighbouring field is a long debugging session.
+### What it is not
+It is not validation. It does not reject the bad value or tell you about it. It contains the blast radius and no more. 
+That is why section 9 pairs it with an assertion — the mask keeps the bug local, the assert makes it visible.
 
 **Summary:** the mask does not make a bad value good. It stops a bad value from
 spreading.
