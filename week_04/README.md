@@ -8,7 +8,7 @@
   - [x] Mask *after* shifting so an oversized value can't spill into neighbouring fields.
 - [x] **Why read-modify-write on a hardware register is a race.** Three bus accesses; an interrupt (or another master) landing between the read and the write loses its change.
   - [x] Atomic set/reset registers exist for exactly this. On the F3's GPIO: `BSRR` (set/reset, one write) and `BRR` (reset only).
-  - [ ] Note which registers you *must* still RMW (e.g. `MODER`), and how you protect those instead.
+  - [x] Note which registers you *must* still RMW (e.g. `MODER`), and how you protect those instead.
 - [ ] **Struct bitfields** — and why most embedded style guides ban them.
   - [ ] Allocation order, straddling of storage units, and padding are implementation-defined.
   - [ ] No guarantee about how many bus accesses a bitfield write becomes — fatal for hardware registers.
