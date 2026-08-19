@@ -1081,20 +1081,40 @@ handler touch the register, you still need interrupt masking (or the FreeRTOS
 A bitfield is a struct member with a declared width in bits.
 
 ```c
-struct flags {
-    unsigned int ready   : 1;
-    unsigned int error   : 1;
-    unsigned int channel : 4;
-    unsigned int mode    : 2;
-};
+typedef struct
+{
+  uint32_t DMA1EN : 1;
+  uint32_t DMA2EN : 1;
+  uint32_t SRAMEN : 1;
+  uint32_t Res0x3 : 1;
+  uint32_t FLITFEN : 1;
+  uint32_t FMCEN_1 : 1;
+  uint32_t CRCEN : 1;
+  uint32_t Res0x7_15 : 9;
+  uint32_t IOPHEN_1 : 1;
+  uint32_t IOPAEN : 1;
+  uint32_t IOPBEN : 1;
+  uint32_t IOPCEN : 1;
+  uint32_t IOPDEN : 1;
+  uint32_t IOPEEN : 1;
+  uint32_t IOPFEN : 1;
+  uint32_t IOPGEN_1 : 1;
+  uint32_t TSCEN : 1;
+  uint32_t Res0x25_27 : 3;
+  uint32_t ADC12EN : 1;
+  uint32_t ADC34EN : 1;
+  uint32_t Res0x30_31 : 2;
+} RCC_AHBENR_t;
 ```
 
 The intent looks clear: pack 8 logical fields into one byte, and read or write them by name.
 
 ```c
-struct flags f = {0};
-f.ready = 1;
-f.channel = 7;
+#define STATE_HIGH (1)
+#define RCC_ADDR ((volatile RCC_AHBENR_t *)0x40021014UL)
+
+// Enable the clock for GPIOE peripheral in the AHBENR
+RCC_ADDR->IOPEEN = STATE_HIGH;
 ```
 
 The compiler generates the shift and mask operations for you. That is the only promise. Everything about the *placement* of those bits is either implementation-defined or unspecified.
