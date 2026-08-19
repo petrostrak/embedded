@@ -9,9 +9,9 @@
 - [x] **Why read-modify-write on a hardware register is a race.** Three bus accesses; an interrupt (or another master) landing between the read and the write loses its change.
   - [x] Atomic set/reset registers exist for exactly this. On the F3's GPIO: `BSRR` (set/reset, one write) and `BRR` (reset only).
   - [x] Note which registers you *must* still RMW (e.g. `MODER`), and how you protect those instead.
-- [ ] **Struct bitfields** — and why most embedded style guides ban them.
-  - [ ] Allocation order, straddling of storage units, and padding are implementation-defined.
-  - [ ] No guarantee about how many bus accesses a bitfield write becomes — fatal for hardware registers.
+- [x] **Struct bitfields** — and why most embedded style guides ban them.
+  - [x] Allocation order, straddling of storage units, and padding are implementation-defined.
+  - [x] No guarantee about how many bus accesses a bitfield write becomes — fatal for hardware registers.
 - [ ] **`union` type punning vs `memcpy`.** `memcpy` is the portable way; union punning is legal in C (unlike C++) but still trips alignment and strict-aliasing assumptions when pointers get involved.
   - [ ] Confirm at `-O2` that `memcpy` of 4 bytes compiles to a single load/store, i.e. it costs nothing.
 - [ ] **Endianness.** Little vs big; byte swapping for protocol work.
