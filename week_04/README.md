@@ -698,3 +698,379 @@ Run time, for computed values:
 assert(FIELD_FITS(TIMER_PRESCALER_MASK, prescaler));
 ```
 </details>
+
+<details>
+<summary>Read-Modify-Write Races on Hardware Registers (STM32F3, C)</summary>
+
+## What a register access is in C
+
+A peripheral register is a fixed address in the memory map. CMSIS gives you a
+`volatile` struct pointer:
+
+```c
+#include "stm32f3xx.h"      /* GPIOA, RCC, TIM2 ... */
+
+/* GPIOA is:  ((GPIO_TypeDef *) 0x48000000UL)
+   Each member of GPIO_TypeDef is declared __IO, which is volatile uint32_t. */
+```
+
+`volatile` tells the compiler two things:
+
+* Do not cache the value in a CPU register.
+* Do not remove, merge, or reorder the accesses.
+
+`volatile` does **not** make an access atomic. This is the single most common
+misunderstanding. It controls *how many* accesses happen, not whether they
+happen as one indivisible step.
+
+## Why `|=` is three bus accesses
+
+```c
+GPIOA->ODR |= (1U << 5);        /* set PA5 high */
+```
+
+The Cortex-M4 has no "OR into memory" instruction. The compiler must emit:
+
+```asm
+LDR  r1, [r0]        ; 1. READ   ODR from the bus
+ORR  r1, r1, #0x20   ; 2. MODIFY in a CPU register
+STR  r1, [r0]        ; 3. WRITE  ODR back to the bus
+```
+
+Between step 1 and step 3 the old value of every other bit in that register is
+sitting in a CPU register. It is a stale snapshot. If anything changes the real
+register during that window, step 3 overwrites the change.
+
+The same applies to `&=`, `^=`, `++`, and any bitfield assignment.
+
+### The failure timeline
+
+Main code drives PA5. An interrupt handler drives PA9. Both use `|=` on `ODR`.
+
+An interrupt handler is a function that you never call. You register it, and the hardware calls it for you when an event happens (timer tick, UART byte, pin edge). The CPU stops the main code between two machine instructions, saves the registers, runs the handler, restores the registers, and resumes the main code at the exact instruction where it stopped. The main code does not know it happened.
+
+| Time | Main loop | Interrupt handler | ODR in hardware |
+|---|---|---|---|
+| t0 | | | `0x0000` |
+| t1 | `LDR` → r1 = `0x0000` | | `0x0000` |
+| t2 | *IRQ taken* | `LDR` → `0x0000` | `0x0000` |
+| t3 | | `ORR` + `STR` `0x0200` | `0x0200` (PA9 high) |
+| t4 | | *return* | `0x0200` |
+| t5 | `ORR` r1 = `0x0020` | | `0x0200` |
+| t6 | `STR` `0x0020` | | `0x0020` (**PA9 lost**) |
+
+Nobody cleared PA9 because nobody had to. STR is not "set bit 5" — it is "make ODR equal to r1". r1 was 0x0020, so every other bit became 0 as a side effect. The main loop wrote a value that was correct at t1 and wrong at t6.
+
+### It is not only interrupts
+
+Anything else that can touch the same register is another bus master:
+
+* **DMA** writing a peripheral register while the CPU does RMW on it.
+* **The peripheral itself.** Hardware sets status flags at any moment.
+* **A debugger** writing through the AHB debug port.
+* **Another core**, on parts that have one (not the F3, but keep the habit).
+* **A second RTOS task** that is preempted mid-sequence. Same race, no
+  interrupt involved.
+
+## The atomic way: `BSRR` and `BRR`
+
+STM32 GPIO ports give you write-only registers that need **no read**. One `STR`
+on the bus. There is no window to interrupt, because there is nothing between
+the read and the write — there is no read.
+
+### `GPIOx_BSRR` — 32 bits, set and reset
+
+| Bits | Name | Effect when you write 1 |
+|---|---|---|
+| 15:0 | `BS0..BS15` | **Set** the matching pin |
+| 31:16 | `BR0..BR15` | **Reset** the matching pin |
+
+Writing 0 to a bit does nothing. Untouched pins are untouched. You never need
+to know the current state of the port.
+
+```c
+#define LED_PIN   5U
+
+/* Set PA5 — one bus write, atomic */
+GPIOA->BSRR = (1U << LED_PIN);
+
+/* Clear PA5 — high half of BSRR */
+GPIOA->BSRR = (1U << (LED_PIN + 16U));
+
+/* Or use the dedicated reset register (F3 has both) */
+GPIOA->BRR  = (1U << LED_PIN);
+```
+
+Set and reset in the same write is allowed. If you set both `BSx` and `BRx` for
+the same pin, the **set wins** (`BSx` has priority). Do not rely on that; it
+usually means your mask is wrong.
+
+```c
+/* Drive a 4-bit bus on PA0..PA3 to value `v`, one atomic write.
+   Clear all four, set the ones we want. */
+static inline void bus_write(uint32_t v)
+{
+    GPIOA->BSRR = ((0x0FU & ~v) << 16U) | (v & 0x0FU);
+}
+```
+
+### `GPIOx_BRR` — 16 bits, reset only
+
+Convenience register. `GPIOA->BRR = mask;` equals writing `mask << 16` to
+`BSRR`. Same atomicity.
+
+### Read/write summary
+
+| Register | Access | Use |
+|---|---|---|
+| `IDR` | read-only | read pin input state |
+| `ODR` | read/write | read the current output latch |
+| `BSRR` | **write-only** | set and/or reset pins atomically |
+| `BRR` | **write-only** | reset pins atomically |
+
+Reading `BSRR` returns `0x00000000`. Never do `GPIOA->BSRR |= x;` — this is
+still an RMW, it reads garbage, and it defeats the whole purpose. Always plain
+assignment `=`.
+
+### A clean tiny driver
+
+```c
+static inline void pin_high(GPIO_TypeDef *port, uint32_t pin)
+{
+    port->BSRR = (1U << pin);
+}
+
+static inline void pin_low(GPIO_TypeDef *port, uint32_t pin)
+{
+    port->BSRR = (1U << (pin + 16U));
+}
+
+static inline void pin_write(GPIO_TypeDef *port, uint32_t pin, bool level)
+{
+    port->BSRR = level ? (1U << pin) : (1U << (pin + 16U));
+}
+```
+
+### The toggle trap
+
+The F3 GPIO has no atomic toggle register. Toggle needs the old state:
+
+```c
+GPIOA->ODR ^= (1U << 5);                          /* RMW — races */
+
+uint32_t odr = GPIOA->ODR;                        /* also races: read-then-write */
+GPIOA->BSRR = ((odr & (1U<<5)) << 16) | (~odr & (1U<<5));
+```
+
+The second form makes the *write* atomic, but the read and the write are still
+two steps. It is safer than `^=` because only your own pin is affected — other
+pins are never clobbered. But your own pin can still be wrong if another
+context also drives that pin. If two contexts must toggle the same pin, keep a
+software shadow variable and protect that, or give the pin one owner.
+
+## Registers you must still read-modify-write
+
+Atomic set/reset exists only for GPIO output data. Everything that packs
+multi-bit fields, or that has no shadow register, needs RMW.
+
+**GPIO configuration**
+
+| Register | Why RMW | Bits per pin |
+|---|---|---|
+| `MODER` | mode field, no atomic alias | 2 |
+| `OSPEEDR` | speed field | 2 |
+| `PUPDR` | pull-up/pull-down field | 2 |
+| `AFR[0]`, `AFR[1]` | alternate function selection | 4 |
+| `OTYPER` | 1 bit, but no set/reset register | 1 |
+| `LCKR` | key sequence | — |
+
+```c
+/* PA5 as output, push-pull, low speed, no pull */
+GPIOA->MODER  &= ~(3U << (5 * 2));
+GPIOA->MODER  |=  (1U << (5 * 2));       /* 01 = output */
+GPIOA->OTYPER &= ~(1U << 5);
+GPIOA->PUPDR  &= ~(3U << (5 * 2));
+```
+
+Note that `MODER` is **per port, not per pin**. Two drivers that own different
+pins on the same port still write the same register. This is where the race
+usually appears in real projects.
+
+**Other common RMW registers**
+
+* `RCC->AHBENR`, `RCC->APB1ENR`, `RCC->APB2ENR` — clock enables. Two drivers
+  enabling their clock at the same time is the textbook lost-update bug.
+* Peripheral control registers: `TIM2->CR1`, `USART1->CR1`, `SPI1->CR1`,
+  `I2C1->CR1`, `ADC1->CFGR`, `DMA1_Channel1->CCR`.
+* `EXTI->IMR`, `EXTI->RTSR` — masks and edge selection.
+
+**Registers that look like RMW but are not**
+
+Some registers are write-1-to-clear. On those, `|=` and `&= ~` are both wrong,
+and a plain write is both correct *and* atomic.
+
+```c
+/* WRONG: read-modify-write on a w1c register.
+   Any flag that hardware sets between the read and the write is lost. */
+EXTI->PR |= EXTI_PR_PR0;
+
+/* RIGHT: single write, clears only PR0, atomic */
+EXTI->PR = EXTI_PR_PR0;
+
+/* USART ICR is also write-1-to-clear */
+USART1->ICR = USART_ICR_ORECF;
+```
+
+Timer status registers on the F3 are read-clear-write-0 (`rc_w0`). Clearing one
+flag with `&=` reads the register and writes back zeros for every flag that was
+not set at read time — so a flag raised in that window is silently lost. Write
+ones everywhere except the flag you clear:
+
+```c
+TIM2->SR &= ~TIM_SR_UIF;    /* risky: can drop a flag set mid-sequence */
+TIM2->SR  = ~TIM_SR_UIF;    /* safer: single write, clears only UIF      */
+```
+
+**NVIC is already atomic.** `ISER`, `ICER`, `ISPR`, `ICPR` are write-1-to-act
+registers. `NVIC_EnableIRQ()` does a plain write. No protection needed.
+
+## How to protect the RMW registers
+
+Pick the cheapest option that works. In order of preference:
+
+### 1 Configure once, before concurrency exists
+
+Most RMW registers are configuration. Touch them in `SystemInit` / board init,
+while interrupts are still disabled and before the scheduler starts. Then never
+touch them again. No lock needed, zero cost. This solves 90% of real cases.
+
+```c
+int main(void)
+{
+    /* interrupts still masked here */
+    clocks_init();
+    gpio_init();            /* all MODER / PUPDR / AFR writes live here */
+    peripherals_init();
+
+    __enable_irq();         /* only now can anything else run */
+    for (;;) { app_step(); }
+}
+```
+
+### 2 Single-owner discipline
+
+Give each register exactly one writing context, and document it. If only the
+`TIM2_IRQHandler` ever writes `TIM2->CR1`, there is no race. Write the owner in
+a comment next to the declaration. Reviewers can then check it.
+
+This does not work for shared registers such as `MODER` or `RCC->APBxENR`,
+because ownership is per-register, not per-bit.
+
+### 3 Critical section: mask interrupts
+
+Save and restore `PRIMASK`. Never call bare `__disable_irq()` /
+`__enable_irq()` in a function that may itself be called from inside another
+critical section — the inner `__enable_irq()` would re-enable too early.
+
+```c
+#include "cmsis_compiler.h"
+
+static inline uint32_t critical_enter(void)
+{
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    __DMB();                    /* order accesses across the boundary */
+    return primask;
+}
+
+static inline void critical_exit(uint32_t primask)
+{
+    __DMB();
+    __set_PRIMASK(primask);     /* restores, does not blindly enable */
+}
+
+void gpio_set_mode(GPIO_TypeDef *port, uint32_t pin, uint32_t mode)
+{
+    uint32_t s = critical_enter();
+    port->MODER &= ~(3U << (pin * 2U));
+    port->MODER |=  (mode << (pin * 2U));
+    critical_exit(s);
+}
+```
+
+Keep the section as short as possible. Every cycle inside it is added interrupt
+latency for the whole system. No loops, no waiting on hardware, no `printf`.
+
+### 4 `BASEPRI` instead of `PRIMASK`
+
+`PRIMASK` blocks *everything*. If you have hard real-time handlers (motor
+commutation, a timer capture), raise `BASEPRI` instead. Interrupts with a
+priority number below the threshold keep running.
+
+```c
+static inline uint32_t critical_enter_basepri(uint32_t new_basepri)
+{
+    uint32_t old = __get_BASEPRI();
+    __set_BASEPRI(new_basepri << (8U - __NVIC_PRIO_BITS));
+    __DMB();
+    return old;
+}
+```
+
+Remember that `BASEPRI` cannot mask NMI or HardFault. Also remember that lower
+numbers mean higher priority.
+
+### 5 Bit-banding — not available for F3 GPIO
+
+Bit-banding maps a single bit to its own word address, so a bit write becomes
+one bus write. The Cortex-M3/M4 peripheral bit-band alias covers only
+`0x40000000 – 0x400FFFFF`.
+
+On the F3, GPIO sits on AHB2 at `0x48000000`, **outside** the bit-band region.
+So you cannot bit-band GPIO on the F3, unlike on the F1. Bit-banding still
+works for peripherals inside the APB/AHB1 range. Code that assumes it works
+everywhere is a portability bug.
+
+### 6 `LDREX` / `STREX`
+
+The Cortex-M4 has exclusive access instructions. `STREX` fails if anything
+touched the address since the `LDREX`, so you retry.
+
+```c
+static void reg_set_bits(volatile uint32_t *reg, uint32_t mask)
+{
+    uint32_t v;
+    do {
+        v = __LDREXW((volatile uint32_t *)reg) | mask;
+    } while (__STREXW(v, (volatile uint32_t *)reg) != 0U);
+}
+```
+
+Use with care. Arm does not guarantee exclusive accesses to Device or
+Strongly-ordered memory; behaviour on peripheral addresses is
+implementation-defined. Also, an ISR that clears the exclusive monitor turns
+this into a livelock risk if the retry loop is unbounded. For peripheral
+registers on the F3, prefer 5.1–5.4. `LDREX`/`STREX` is the right tool for
+shared variables in RAM.
+
+### 7 RTOS mutex — task level only
+
+A `SemaphoreHandle_t` or `osMutex` protects task-against-task. It does **not**
+protect against an ISR, because an ISR cannot block. If both a task and a
+handler touch the register, you still need interrupt masking (or the FreeRTOS
+`taskENTER_CRITICAL_FROM_ISR` pair).
+
+## Decision table
+
+| You want to | Use | Atomic |
+|---|---|---|
+| Drive an output pin high / low | `BSRR` / `BRR` | yes |
+| Drive several pins to a pattern | one `BSRR` write | yes |
+| Toggle a pin | shadow variable + `BSRR` | write only |
+| Read pin state | `IDR` | yes (single read) |
+| Clear a w1c flag (`EXTI->PR`, `USART->ICR`) | plain `=` with one bit | yes |
+| Enable an interrupt in the NVIC | `NVIC_EnableIRQ` | yes |
+| Change pin mode / speed / pull / AF | RMW + init-time or critical section | no |
+| Enable a peripheral clock | RMW + init-time or critical section | no |
+| Change a peripheral `CRx` bit at runtime | RMW + critical section | no |
+</details>
