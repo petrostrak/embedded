@@ -47,8 +47,9 @@ int main(void)
   uint32_t new_value = 0x55u;   /* the new value I want to write */
   uint32_t tmp = reg;           /* read the word */
   tmp &= ~TIMER_PRESCALER_MASK; /* clear the old field */
-  tmp |= (new_value << 4) & TIMER_PRESCALER_MASK; /* set the new field */
-  reg = tmp;                                      /* write */
+  tmp |= (new_value << 4) &
+         TIMER_PRESCALER_MASK; /* set the new field with & mask at the end */
+  reg = tmp;                   /* write */
 
   /* write all fields in one operation */
   uint32_t cfg = FIELD_PREP(TIMER_MODE_MASK, 2u) |
