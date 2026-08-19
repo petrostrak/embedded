@@ -1074,3 +1074,317 @@ handler touch the register, you still need interrupt masking (or the FreeRTOS
 | Enable a peripheral clock | RMW + init-time or critical section | no |
 | Change a peripheral `CRx` bit at runtime | RMW + critical section | no |
 </details>
+
+<details>
+<summary>Struct bitfields</summary>
+
+A bitfield is a struct member with a declared width in bits.
+
+```c
+struct flags {
+    unsigned int ready   : 1;
+    unsigned int error   : 1;
+    unsigned int channel : 4;
+    unsigned int mode    : 2;
+};
+```
+
+The intent looks clear: pack 8 logical fields into one byte, and read or write them by name.
+
+```c
+struct flags f = {0};
+f.ready = 1;
+f.channel = 7;
+```
+
+The compiler generates the shift and mask operations for you. That is the only promise. Everything about the *placement* of those bits is either implementation-defined or unspecified.
+
+## What the standard actually guarantees
+
+Very little. The list below is short on purpose.
+
+| Item | Status |
+| --- | --- |
+| The bits you asked for exist and hold the range you asked for | Guaranteed |
+| Fields are allocated in an "addressable storage unit" | Guaranteed, but the unit size is implementation-defined |
+| A zero-width unnamed field starts a new storage unit | Guaranteed |
+| Order of bits inside a unit (low-to-high or high-to-low) | **Implementation-defined** |
+| Whether a field may straddle a storage unit boundary | **Implementation-defined** |
+| Size and alignment of the storage unit | **Implementation-defined** |
+| Amount and position of padding | **Implementation-defined** |
+| Value of padding bits | **Unspecified** |
+| Signedness of a plain `int` bitfield | **Implementation-defined** |
+| Types other than `int`, `signed int`, `unsigned int`, `_Bool` | **Implementation-defined** |
+| Number of memory accesses one field write becomes | **No guarantee at all** |
+
+Bitfields also have hard language limits:
+
+- You cannot apply `&` to a bitfield. There is no address.
+- You cannot apply `sizeof` to a bitfield.
+- You cannot make an array of bitfields.
+- You cannot use a bitfield with `offsetof`.
+- A pointer to a bitfield does not exist, so no generic accessor functions.
+
+## Allocation order — the first trap
+
+The standard does not say which end of the storage unit the first field occupies.
+
+```c
+struct ctrl {
+    unsigned int a : 4;   /* declared first */
+    unsigned int b : 4;
+};
+```
+
+Two compilers, both correct:
+
+```
+Compiler X (little-endian bit order, e.g. GCC on ARM/x86):
+  bit:  7 6 5 4 3 2 1 0
+        b b b b a a a a      -> a is in the low nibble
+
+Compiler Y (big-endian bit order, e.g. some big-endian ABIs, IBM XL):
+  bit:  7 6 5 4 3 2 1 0
+        a a a a b b b b      -> a is in the high nibble
+```
+
+Set `a = 3` and `b = 0`. One compiler writes `0x03`. The other writes `0x30`.
+
+### Consequences
+
+- The layout is not portable between architectures.
+- The layout can change between compilers on the *same* architecture.
+- The layout can change between ABI versions of the same compiler.
+- Bit order and byte order are separate decisions. Knowing the endianness of the CPU does not tell you the bit order of your compiler.
+
+So a struct with bitfields is not a valid description of a wire protocol, a file format, or a hardware register. It is a private detail of one build.
+
+## Straddling and padding — the second trap
+
+Ask for a field that does not fit in the remaining space of the current unit. The compiler picks one of two legal behaviours.
+
+```c
+struct pkt {
+    unsigned int a : 6;
+    unsigned int b : 6;
+};
+```
+
+If the storage unit is 8 bits:
+
+```
+Option 1 — straddle allowed (12 bits used, 4 bits padding at the end):
+  byte0: a a a a a a b b
+  byte1: b b b b . . . .
+
+Option 2 — no straddle (a is padded to the byte end, b starts fresh):
+  byte0: a a a a a a . .
+  byte1: b b b b b b . .
+```
+
+`sizeof(struct pkt)` is 2 in both cases here, but `b` is in a different place. With more fields, the total size also changes.
+
+### Related effects
+
+**`sizeof` is not predictable.** This struct is often 4 bytes, but 2 bytes is legal, and 8 is legal on a machine with 64-bit storage units:
+
+```c
+struct s { unsigned int x : 1; };
+```
+
+**Padding bits are garbage.** They are unspecified, even after an initializer sets every named field. This breaks three common operations:
+
+- `memcmp(&a, &b, sizeof a)` can report a difference when all named fields are equal.
+- Hashing or checksumming the struct bytes gives unstable results.
+- Writing the struct to a file or a socket leaks whatever was in that memory.
+
+Use field-by-field comparison instead. Never compare or serialize bitfield structs as raw bytes.
+
+**Signedness surprises.** A plain `int` bitfield may be signed or unsigned:
+
+```c
+struct t { int x : 3; };   /* range is 0..7, or -4..3 — implementation-defined */
+
+struct t v;
+v.x = 5;
+printf("%d\n", v.x);       /* prints 5, or -3 */
+```
+
+Always write `unsigned int` or `signed int` explicitly. A single-bit `signed` field can hold only 0 and -1, which is almost never what the author wanted.
+
+## The hardware register problem — the reason for the ban
+
+This is the failure that destroys devices, so it deserves its own section.
+
+### The tempting code
+
+```c
+/* DO NOT DO THIS */
+typedef struct {
+    volatile unsigned int enable    : 1;
+    volatile unsigned int irq_clear : 1;
+    volatile unsigned int reserved  : 6;
+    volatile unsigned int prescale  : 8;
+    volatile unsigned int status    : 16;
+} timer_ctrl_t;
+
+#define TIMER ((timer_ctrl_t *)0x40001000)
+
+TIMER->enable = 1;
+```
+
+It reads well. It is also unsafe for at least five separate reasons.
+
+### 1. A write is a read-modify-write
+
+The CPU cannot write one bit. To set `enable`, the compiler must load the register, modify a bit, and store it back.
+
+```
+LDR  r0, [r1]        ; read the whole register
+ORR  r0, r0, #1      ; set bit 0
+STR  r0, [r1]        ; write the whole register
+```
+
+Now consider a status register where bit 5 is *write-1-to-clear*. The read returns 1 for a pending interrupt. The store writes that 1 back, and clears an interrupt you never handled. Your bit assignment silently acknowledged an unrelated event.
+
+Any register with write-1-to-clear bits, read-only bits with side effects, or a FIFO data port is corrupted by a read-modify-write.
+
+### 2. The access width is the compiler's choice
+
+Nothing in the standard fixes the width of the load and the store. A compiler may legally implement `TIMER->prescale = 4;` as:
+
+- one 32-bit load and one 32-bit store, or
+- one 8-bit load and one 8-bit store on the third byte, or
+- two 16-bit accesses, or
+- a bit-set instruction on a bit-band alias.
+
+Many peripherals accept only 32-bit accesses. A byte-wide store to such a register raises a bus fault, or is ignored, or writes the wrong sub-word. The peripheral datasheet demands a specific width. The C source cannot demand it.
+
+The same problem breaks memory-mapped access over a bridge, and any register where a write to the low half must land before the high half.
+
+### 3. The number of accesses is the compiler's choice
+
+Two field writes may become two read-modify-write pairs, or one merged store, or something in between.
+
+```c
+TIMER->prescale = 4;
+TIMER->enable   = 1;
+```
+
+If the compiler merges these into one store, the hardware never sees the intermediate state. If the sequence "set prescale, *then* enable" matters — and in hardware it usually does — the behaviour changes. If the compiler splits them, you get two glitch states on the bus.
+
+`volatile` limits some of this, but it does not fix it. `volatile` says the accesses must occur and must not be reordered relative to each other. It does not say how wide each access is, or how many accesses one field write becomes. On top of that, `volatile` on bitfields is a known weak point in compiler implementations, and MISRA C treats volatile bitfields as a defect.
+
+### 4. Adjacent fields are one memory location
+
+For C11 concurrency purposes, all bitfields in one storage unit are a **single memory location**. Two separate non-bitfield members can be written by two threads safely. Two bitfields in the same unit cannot.
+
+```c
+/* Thread A */ ctrl.enable = 1;
+/* Thread B */ ctrl.prescale = 8;
+```
+
+This is a data race. Each thread reads the whole unit and writes it back. One update is lost. The same applies to an ISR and main code, and to two CPU cores. No amount of `volatile` prevents it. You need a lock, or an atomic read-modify-write, or a hardware set/clear register.
+
+## The correct pattern for registers
+
+Use a whole-word `volatile` object plus explicit masks and shifts. The access width, the access count, and the bit positions are then all visible in the source.
+
+```c
+#include <stdint.h>
+
+#define TIMER_BASE   0x40001000u
+#define TIMER_CTRL   (*(volatile uint32_t *)(TIMER_BASE + 0x00u))
+#define TIMER_STATUS (*(volatile uint32_t *)(TIMER_BASE + 0x04u))
+
+/* Bit definitions taken directly from the datasheet. */
+#define CTRL_ENABLE_Msk     (1u << 0)
+#define CTRL_IRQCLEAR_Msk   (1u << 1)
+#define CTRL_PRESCALE_Pos   8u
+#define CTRL_PRESCALE_Msk   (0xFFu << CTRL_PRESCALE_Pos)
+
+static inline void timer_set_prescale(uint32_t value)
+{
+    uint32_t reg = TIMER_CTRL;                 /* one 32-bit read  */
+    reg &= ~CTRL_PRESCALE_Msk;
+    reg |= (value << CTRL_PRESCALE_Pos) & CTRL_PRESCALE_Msk;
+    TIMER_CTRL = reg;                          /* one 32-bit write */
+}
+
+/* Write-1-to-clear: write only the bit, never read first. */
+static inline void timer_clear_irq(void)
+{
+    TIMER_STATUS = CTRL_IRQCLEAR_Msk;
+}
+```
+
+Properties of this version:
+
+- Exactly one read and one write, both 32 bits wide, on every target.
+- Bit positions are constants that you can check against the datasheet.
+- The write-1-to-clear case skips the read, which a bitfield cannot express.
+- The accessor is an ordinary function, so you can unit-test it and mock the register.
+
+For protocol and file formats, do the same: read the bytes into a `uint8_t` array, then extract fields with shifts and masks. That code is portable, and it survives a compiler change.
+
+For a "set one bit atomically" need, prefer the hardware feature: a separate SET register, a separate CLEAR register, or a bit-band alias. If none exists, use an atomic operation or disable interrupts around the read-modify-write.
+
+## When bitfields are acceptable
+
+Bitfields are not forbidden by the language, and they are not always wrong. They are safe when **no external party depends on the layout**.
+
+Acceptable:
+
+- Compact internal state or flag sets inside one program, built by one compiler.
+- Large in-memory tables where the memory saving is measured and real.
+- Code that never compares, hashes, copies as bytes, or transmits the struct.
+
+Not acceptable:
+
+- Hardware registers.
+- Network packets, bus frames, on-disk formats.
+- Any structure shared across an ABI boundary, a language boundary, or a process boundary.
+- Any structure written by more than one thread or by an ISR.
+
+If you do use them, apply these rules:
+
+1. Declare every field `unsigned int` or `signed int`, never plain `int` and never a narrow type.
+2. Never use a single-bit signed field.
+3. Never rely on `sizeof`, on field order, or on the bytes of the struct.
+4. Never mark a bitfield `volatile`.
+5. Add a static assert on the struct size, so a toolchain change fails the build instead of failing in the field.
+
+```c
+_Static_assert(sizeof(struct flags) == 4, "unexpected bitfield layout");
+```
+
+## What the style guides say
+
+The rules below are the usual reason a reviewer rejects bitfields. Check the current text of each standard before you cite it in a document.
+
+- **MISRA C:2012 Rule 6.1** — a bitfield must have an appropriate type. In C90 that means `unsigned int` or `signed int` only.
+- **MISRA C:2012 Rule 6.2** — a single-bit named bitfield must not be signed.
+- **MISRA C:2012 Directive 1.1** — you must identify and document every use of implementation-defined behaviour. Bitfield layout is implementation-defined, so each use needs a documented justification.
+- **CERT C INT12-C** — do not assume the type of a plain `int` bitfield in an expression.
+- **CERT C CON32-C** — prevent data races when threads access bitfields.
+- **Barr Group Embedded C Coding Standard** — bitfields must not be used to access peripheral registers; use masks and shifts.
+- **Linux kernel style** — bitfields are acceptable for internal flags, but not for anything that describes hardware or a wire format.
+
+The pattern is consistent. The guides rarely ban the feature outright. They ban it for the cases where layout matters, which in embedded work is most cases.
+
+## Summary
+
+| Question | Answer |
+| --- | --- |
+| Which bit does my first field use? | Implementation-defined. |
+| Can a field cross a unit boundary? | Implementation-defined. |
+| How big is the struct? | Implementation-defined. |
+| What is in the padding? | Unspecified. Do not read it. |
+| Is `int x : 3` signed? | Implementation-defined. |
+| How wide is the bus access for a write? | Not specified. The compiler decides. |
+| How many bus accesses does one write take? | Not specified. The compiler decides. |
+| Are two adjacent fields thread-safe? | No. They are one memory location. |
+| Does `volatile` fix any of this? | No. It fixes elision and reordering only. |
+
+**One sentence:** bitfields give you readable syntax over an unspecified memory layout and an unspecified access pattern, which is a fair trade for private program state and a bad trade for anything that a device, a peer, or another thread also reads.
+</details>
