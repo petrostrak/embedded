@@ -1107,7 +1107,7 @@ typedef struct
 } RCC_AHBENR_t;
 ```
 
-The intent looks clear: pack 8 logical fields into one byte, and read or write them by name.
+The intent looks clear: pack all logical fields into 4 bytes, and read or write them by name.
 
 ```c
 #define STATE_HIGH (1)
