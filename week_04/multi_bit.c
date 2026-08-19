@@ -14,9 +14,24 @@
 #define TIMER_CLKSRC_MASK 0x00003000u    /* bits 12-13, width 2  */
 #define TIMER_RELOAD_MASK 0x0FFF0000u    /* bits 16-27, width 12 */
 
+/* isolates the lowest set bit: 0x00000FF0 -> 0x00000010 */
+#define LOWBIT(mask) ((uint32_t)(mask) & (~(uint32_t)(mask) + 1u))
+/* multiply by the lowest bit == shift left; divide == shift right */
+#define FIELD_GET(mask, reg)                                                   \
+  (((uint32_t)(reg) & (uint32_t)(mask)) / LOWBIT(mask))
+#define FIELD_PREP(mask, val)                                                  \
+  (((uint32_t)(val) * LOWBIT(mask)) & (uint32_t)(mask))
+#define FIELD_MODIFY(reg, mask, val)                                           \
+  ((reg) = ((uint32_t)(reg) & ~(uint32_t)(mask)) | FIELD_PREP((mask), (val)))
+
 int main(void)
 {
   volatile uint32_t *ctrl = (volatile uint32_t *)TIMER_CTRL_ADDR;
+  /*       ^         ^      ^
+           |         |      +-- treat the number as a location
+           |         +--------- 32 bits wide
+           +------------------- may change outside my program
+  */
   uint32_t reg = *ctrl;
 
   /* read a field */
@@ -25,6 +40,23 @@ int main(void)
   /* or */
   uint32_t prescalerdefined = FIELD_READ(reg, 4, 8);
   assert(prescalerdefined == prescaler);
+
+  /* write a field
+   * remember, a field is part of a word, so you
+   * must write the whole word. */
+  uint32_t new_value = 0x55u;   /* the new value I want to write */
+  uint32_t tmp = reg;           /* read the word */
+  tmp &= ~TIMER_PRESCALER_MASK; /* clear the old field */
+  tmp |= (new_value << 4) & TIMER_PRESCALER_MASK; /* set the new field */
+  reg = tmp;                                      /* write */
+
+  /* write all fields in one operation */
+  uint32_t cfg = FIELD_PREP(TIMER_MODE_MASK, 2u) |
+                 FIELD_PREP(TIMER_PRESCALER_MASK, 42u) |
+                 FIELD_PREP(TIMER_CLKSRC_MASK, 1u) |
+                 FIELD_PREP(TIMER_RELOAD_MASK, 1000u) | TIMER_IRQ_EN_MASK;
+
+  *ctrl = cfg;
 
   return 0;
 }
