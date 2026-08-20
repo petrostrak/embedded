@@ -1,6 +1,8 @@
 #include <assert.h>
 #include <inttypes.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <string.h>
 
 #define FIELD_READ(reg, shift, width)                                          \
   (((uint32_t)(reg) >> (shift)) & ((1u << (width)) - 1u))
