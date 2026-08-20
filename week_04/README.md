@@ -1408,3 +1408,356 @@ The pattern is consistent. The guides rarely ban the feature outright. They ban 
 
 **One sentence:** bitfields give you readable syntax over an unspecified memory layout and an unspecified access pattern, which is a fair trade for private program state and a bad trade for anything that a device, a peer, or another thread also reads.
 </details>
+
+<details>
+<summary>union vs memcpy</summary>
+
+You have 32 bits. You want to see them as a `float` in one place and as a `uint32_t` in another. Typical cases:
+
+- IEEE-754 bit manipulation (extract the exponent, build a NaN, fast inverse square root).
+- Parsing a network packet or a file header out of a `unsigned char` buffer.
+- Writing a value to a DMA descriptor or a serialisation buffer.
+- Hashing a `double`.
+
+C gives you three ways to do it. One is undefined behaviour, one is legal C but fragile, and one is portable.
+
+## The three techniques
+
+### 1. Pointer cast — undefined behaviour
+
+```c
+/* WRONG */
+float bits_to_float_cast(uint32_t bits)
+{
+    return *(float *)&bits;
+}
+```
+
+This breaks the **strict aliasing rule**. An object may be accessed only through an lvalue of a compatible type, of a signed/unsigned variant of it, or of a character type. A `uint32_t` object accessed through a `float` lvalue is none of those.
+
+GCC warns about this exact form:
+
+```
+warning: dereferencing type-punned pointer will break strict-aliasing rules [-Wstrict-aliasing]
+```
+
+It also breaks alignment. `&bits` has the alignment of `uint32_t`, which is not required to satisfy the alignment of `float`.
+
+### 2. Union — legal in C, undefined in C++
+
+```c
+union u32f { uint32_t u; float f; };
+
+float bits_to_float_union(uint32_t bits)
+{
+    union u32f x;
+    x.u = bits;
+    return x.f;          /* read a member that was not the last one written */
+}
+```
+
+C11 6.5.2.3 paragraph 3 and footnote 95 permit this. If you read a member other than the one last written, the bytes of the object representation are reinterpreted in the new type. This is deliberate. It is not undefined behaviour in C.
+
+**C++ does not allow it.** In C++ this reads a non-active union member, which is undefined behaviour. C++20 added `std::bit_cast` for the job. If a header is shared between C and C++, union punning is not portable across the two languages, even though every mainstream compiler accepts it in practice.
+
+### 3. `memcpy` — always correct
+
+```c
+float bits_to_float_memcpy(uint32_t bits)
+{
+    float f;
+    memcpy(&f, &bits, sizeof f);
+    return f;
+}
+```
+
+`memcpy` copies bytes. Access through a character type is explicitly exempt from the aliasing rule, and `memcpy` has no alignment requirement on either operand. This form is valid C, valid C++, valid on every alignment-strict CPU, and valid under every optimisation level.
+
+## Why the union is still fragile
+
+The union is legal, but it does not solve every problem the pointer cast has.
+
+### It stops working when a pointer escapes
+
+The permission applies to an access **through the union object**. When a bare pointer to a member leaves the union, the compiler no longer sees a union, and strict aliasing applies again.
+
+```c
+/* alias.c */
+int alias_bug(uint32_t *u, float *f)
+{
+    *u = 1;
+    *f = 2.0f;      /* the compiler assumes this cannot touch *u */
+    return *u;
+}
+```
+
+```console
+$ gcc -O2 -S -masm=intel alias.c
+alias_bug:
+        mov     DWORD PTR [rdi], 1
+        mov     eax, 1                    ; <-- return value folded to 1
+        mov     DWORD PTR [rsi], 0x40000000
+```
+
+The function returns the constant 1, even if the caller passes the same address twice. With `-fno-strict-aliasing` the reload comes back:
+
+```console
+$ gcc -O2 -fno-strict-aliasing -S -masm=intel alias.c
+alias_bug:
+        mov     DWORD PTR [rdi], 1
+        mov     DWORD PTR [rsi], 0x40000000
+        mov     eax, DWORD PTR [rdi]      ; <-- reloaded
+```
+
+**GCC produced no warning at all for this version.** The single-expression cast in section 2.1 is warned about. The two-pointer form is silent. Do not rely on the warning to find these bugs.
+
+### Other union hazards
+
+- **Trap representations.** Not every bit pattern is a valid value of every type. Reading such a pattern is undefined. This matters for `_Bool`, for pointers, and for `long double` on x87 (10 bytes of value in 12 or 16 bytes of storage).
+- **Padding.** `sizeof(union)` is the size of the largest member, rounded up for alignment. The trailing bytes are unspecified. If the members have different sizes, the extra bytes are garbage.
+- **Endianness.** The union does not change byte order. A `union { uint32_t u; uint8_t b[4]; }` gives a different `b[0]` on a big-endian machine.
+- **Size assumptions.** `sizeof(float) == sizeof(uint32_t)` is not guaranteed by the standard. Assert it.
+- **Anonymous or partial writes.** Writing `x.b[0]` then reading `x.u` leaves the other three bytes indeterminate.
+
+`memcpy` avoids the first, second and fifth of these. It does not fix endianness, and it does not fix a size mismatch — but `memcpy` with an explicit size makes the size mismatch a compile-time error rather than silent truncation.
+
+## The cost — measured, not assumed
+
+The usual objection to `memcpy` is "it is a function call". At `-O2` it is not. GCC treats `memcpy` with a **constant** size as a builtin and lowers it to plain loads and stores.
+
+### The three techniques compile to the same instruction
+
+```c
+/* pun.c */
+float bits_to_float_memcpy(uint32_t b) { float f; memcpy(&f, &b, sizeof f); return f; }
+float bits_to_float_union (uint32_t b) { union u32f x; x.u = b; return x.f; }
+float bits_to_float_cast  (uint32_t b) { return *(float *)&b; }
+```
+
+```console
+$ gcc -O2 -S -masm=intel pun.c
+bits_to_float_memcpy:
+        movd    xmm0, edi
+        ret
+bits_to_float_union:
+        movd    xmm0, edi
+        ret
+bits_to_float_cast:
+        movd    xmm0, edi
+        ret
+```
+
+Identical. One instruction. The `memcpy` version costs nothing, and it is the only one of the three that is correct in every context.
+
+The 8-byte case is the same:
+
+```console
+bits_to_double_memcpy:
+        movq    xmm0, rdi
+        ret
+```
+
+### A 4-byte copy between memory operands
+
+```c
+void c4(void *d, const void *s) { memcpy(d, s, 4); }
+```
+
+```console
+c4:
+        mov     eax, DWORD PTR [rsi]      ; one 32-bit load
+        mov     DWORD PTR [rdi], eax      ; one 32-bit store
+        ret
+```
+
+**One load, one store.** No call, no loop, no length check.
+
+### This holds at every optimisation level and in freestanding mode
+
+| Flags | Result for `memcpy(d, s, 4)` |
+| --- | --- |
+| `-O2` | one load, one store |
+| `-Os` | one load, one store |
+| `-O2 -ffreestanding` | one load, one store |
+| `-O2 -fno-builtin` | one load, one store |
+| `-O0` | still inlined — a load and a store through the stack slots, **no call** |
+
+Even `-O0` does not emit a call for a 4-byte constant-size copy:
+
+```console
+$ gcc -O0 -S -masm=intel sizes.c
+c4:
+        push    rbp
+        mov     rbp, rsp
+        mov     QWORD PTR -8[rbp], rdi
+        mov     QWORD PTR -16[rbp], rsi
+        mov     rax, QWORD PTR -16[rbp]
+        mov     edx, DWORD PTR [rax]      ; load
+        mov     rax, QWORD PTR -8[rbp]
+        mov     DWORD PTR [rax], edx      ; store
+        pop     rbp
+        ret
+```
+
+`-ffreestanding` and `-fno-builtin` are the two flags most likely to appear in an embedded build. Neither one restores the call for a small constant size. GCC still expands `memcpy` because the C standard reserves the name; you only lose the expansion if you also pass `-fno-builtin-memcpy` or compile with a toolchain that has no builtin at all.
+
+### Larger sizes stay inline; runtime sizes do not
+
+```console
+c8:                                  ; memcpy(d, s, 8)
+        mov     rax, QWORD PTR [rsi]
+        mov     QWORD PTR [rdi], rax
+
+c12:                                 ; memcpy(d, s, 12)
+        mov     rax, QWORD PTR [rsi]
+        mov     QWORD PTR [rdi], rax
+        mov     eax, DWORD PTR 8[rsi]
+        mov     DWORD PTR 8[rdi], eax
+
+c64:                                 ; memcpy(d, s, 64) -> four SSE pairs
+        movdqu  xmm0, XMMWORD PTR [rsi]
+        movups  XMMWORD PTR [rdi], xmm0
+        ... (x4)
+
+cn:                                  ; memcpy(d, s, n) with runtime n
+        jmp     memcpy@PLT            ; <-- a real call
+```
+
+**The rule: a constant size is free, a runtime size is a call.** The threshold above which GCC gives up and calls the library is target-dependent and controlled by `-mmemcpy-strategy` / `--param` settings, but small fixed sizes are always inlined.
+
+### A whole header parse is free
+
+```c
+struct hdr { uint32_t magic; uint16_t len; uint16_t flags; uint32_t crc; };
+
+void parse(struct hdr *h, const unsigned char *p)
+{
+    memcpy(&h->magic, p + 0, 4);
+    memcpy(&h->len,   p + 4, 2);
+    memcpy(&h->flags, p + 6, 2);
+    memcpy(&h->crc,   p + 8, 4);
+}
+```
+
+```console
+parse:
+        mov     eax, DWORD PTR [rsi]
+        mov     DWORD PTR [rdi], eax
+        movzx   eax, WORD PTR 4[rsi]
+        mov     WORD PTR 4[rdi], ax
+        movzx   eax, WORD PTR 6[rsi]
+        mov     WORD PTR 6[rdi], ax
+        mov     eax, DWORD PTR 8[rsi]
+        mov     DWORD PTR 8[rdi], eax
+        ret
+```
+
+Four `memcpy` calls, zero function calls, eight instructions. This is the correct way to parse a buffer. It has no aliasing problem, no alignment problem, and no bitfield layout problem.
+
+Add the byte order and it stays free:
+
+```c
+uint32_t read_be32(const unsigned char *p)
+{
+    uint32_t v;
+    memcpy(&v, p, 4);
+    return __builtin_bswap32(v);
+}
+```
+
+```console
+read_be32:
+        mov     eax, DWORD PTR [rdi]
+        bswap   eax
+        ret
+```
+
+## Practical patterns
+
+### A `bit_cast` helper
+
+```c
+#include <string.h>
+#include <stdint.h>
+
+#define BIT_CAST(To, from)                                   \
+    __builtin_choose_expr(                                   \
+        sizeof(To) == sizeof(from),                          \
+        ({ To _t; memcpy(&_t, &(from), sizeof(_t)); _t; }),  \
+        (void)0)
+```
+
+Portable version without GNU extensions:
+
+```c
+static inline uint32_t f32_bits(float f)
+{
+    uint32_t u;
+    _Static_assert(sizeof u == sizeof f, "float is not 32 bits");
+    memcpy(&u, &f, sizeof u);
+    return u;
+}
+
+static inline float bits_f32(uint32_t u)
+{
+    float f;
+    _Static_assert(sizeof u == sizeof f, "float is not 32 bits");
+    memcpy(&f, &u, sizeof f);
+    return f;
+}
+```
+
+Use `sizeof` on the **destination** object, never a hard-coded number and never `sizeof` of a pointer.
+
+### Buffer parsing
+
+```c
+static inline uint16_t rd_le16(const unsigned char *p)
+{
+    return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
+}
+
+static inline uint32_t rd_le32(const unsigned char *p)
+{
+    uint32_t v;
+    memcpy(&v, p, sizeof v);      /* host order */
+    return v;                     /* add a bswap if the wire is big-endian */
+}
+```
+
+The shift-and-or version is endian-independent and also compiles to a single load plus a `bswap` on GCC and Clang at `-O2`. Either form is fine. A `struct` overlay with a pointer cast is not.
+
+## Other `memcpy` details worth knowing
+
+- **Overlap is undefined.** `memcpy` requires non-overlapping regions. Use `memmove` when the ranges can overlap. GCC does not diagnose this reliably.
+- **Null pointers are undefined even with `n == 0`.** `memcpy(NULL, NULL, 0)` is UB by the letter of the standard. Guard the pointer, not the length.
+- **`restrict` in the prototype is real.** The declaration is `void *memcpy(void *restrict, const void *restrict, size_t)`. Passing overlapping pointers is a contract violation the optimiser may exploit.
+- **The destination may still be a trap representation.** `memcpy` gets the bytes across safely, but if those bytes are not a valid value of the destination type, reading the destination is still undefined. This applies to `_Bool`, to pointers, and to `long double`. It does not apply to `float`/`double`/integers on any mainstream target, where every bit pattern is a value (a NaN is a value).
+- **Volatile is not covered.** `memcpy` cannot be used on `volatile` objects with any guarantee about access width or count. For hardware registers use a `volatile` object of the exact width instead.
+
+## Summary
+
+| | Pointer cast | Union | `memcpy` |
+| --- | --- | --- | --- |
+| Valid C | **No** — UB | Yes | Yes |
+| Valid C++ | No | **No** — UB | Yes |
+| Survives strict aliasing | No | Only while the union stays visible | Yes |
+| Safe when misaligned | No | Yes (the union is aligned for all members) | Yes |
+| Works on a raw `unsigned char` buffer | No | Only after a copy | Yes |
+| Cost at `-O2` for 4 bytes | 1 instruction | 1 instruction | **1 instruction** |
+| Cost at `-O0` for 4 bytes | inline | inline | inline, no call |
+| Cost with a runtime size | n/a | n/a | a library call |
+| Compiler warns when you get it wrong | Sometimes | No | n/a |
+
+**One sentence:** `memcpy` with a constant size is the portable spelling of type punning and it compiles to exactly the same one or two instructions as the unsafe alternatives, so there is no performance argument for anything else — use the union only for genuinely C-only code where you never let a pointer to a member escape.
+
+## Useful flags for an audit:
+
+| Flag | Purpose |
+| --- | --- |
+| `-Wstrict-aliasing=2` | catch the obvious cast forms |
+| `-Wcast-align` | flag casts that increase the required alignment |
+| `-Wcast-align=strict` | flag them even on targets that tolerate unaligned access |
+| `-fsanitize=alignment,undefined` | runtime detection (Clang's coverage is better than GCC's) |
+| `-fno-strict-aliasing` | a workaround for legacy code, not a fix |
+</details>
