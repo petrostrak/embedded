@@ -12,8 +12,8 @@
 - [x] **Struct bitfields** — and why most embedded style guides ban them.
   - [x] Allocation order, straddling of storage units, and padding are implementation-defined.
   - [x] No guarantee about how many bus accesses a bitfield write becomes — fatal for hardware registers.
-- [ ] **`union` type punning vs `memcpy`.** `memcpy` is the portable way; union punning is legal in C (unlike C++) but still trips alignment and strict-aliasing assumptions when pointers get involved.
-  - [ ] Confirm at `-O2` that `memcpy` of 4 bytes compiles to a single load/store, i.e. it costs nothing.
+- [x] **`union` type punning vs `memcpy`.** `memcpy` is the portable way; union punning is legal in C (unlike C++) but still trips alignment and strict-aliasing assumptions when pointers get involved.
+  - [x] Confirm at `-O2` that `memcpy` of 4 bytes compiles to a single load/store, i.e. it costs nothing.
 - [ ] **Endianness.** Little vs big; byte swapping for protocol work.
   - [ ] Write your own `bswap16`/`bswap32` rather than relying on `htons` and friends.
   - [ ] Note why serialising byte-by-byte into a `uint8_t[]` sidesteps the whole question.
