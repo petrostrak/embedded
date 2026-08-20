@@ -14,8 +14,8 @@
   - [x] No guarantee about how many bus accesses a bitfield write becomes — fatal for hardware registers.
 - [x] **`union` type punning vs `memcpy`.** `memcpy` is the portable way; union punning is legal in C (unlike C++) but still trips alignment and strict-aliasing assumptions when pointers get involved.
   - [x] Confirm at `-O2` that `memcpy` of 4 bytes compiles to a single load/store, i.e. it costs nothing.
-- [ ] **Endianness.** Little vs big; byte swapping for protocol work.
-  - [ ] Write your own `bswap16`/`bswap32` rather than relying on `htons` and friends.
+- [x] **Endianness.** Little vs big; byte swapping for protocol work.
+  - [x] Write your own `bswap16`/`bswap32` rather than relying on `htons` and friends.
   - [ ] Note why serialising byte-by-byte into a `uint8_t[]` sidesteps the whole question.
 - [ ] **`make`:**
   - [ ] Targets, prerequisites, recipes; how make decides something is out of date.
@@ -1760,4 +1760,487 @@ The shift-and-or version is endian-independent and also compiles to a single loa
 | `-Wcast-align=strict` | flag them even on targets that tolerate unaligned access |
 | `-fsanitize=alignment,undefined` | runtime detection (Clang's coverage is better than GCC's) |
 | `-fno-strict-aliasing` | a workaround for legacy code, not a fix |
+</details>
+
+<details>
+<summary>Endianness</summary>
+
+A `uint32_t` holds one number. In memory it occupies four bytes. Endianness is the answer to one question: **which byte goes first?**
+
+Take the value `0x01020304`.
+
+```
+Little-endian (x86, ARM in normal mode, RISC-V):
+  address:  +0   +1   +2   +3
+  byte:     04   03   02   01        <- least significant byte first
+
+Big-endian (network order, SPARC, m68k, some MIPS/PowerPC):
+  address:  +0   +1   +2   +3
+  byte:     01   02   03   04        <- most significant byte first
+```
+
+Confirmed in the container:
+
+```c
+uint32_t x = 0x01020304u;
+uint8_t m[4];
+memcpy(m, &x, 4);
+printf("%02X %02X %02X %02X\n", m[0], m[1], m[2], m[3]);
+```
+
+```
+host layout of 0x01020304: 04 03 02 01
+```
+
+### Key points
+
+- **Endianness only exists when you look at the bytes.** Arithmetic never sees it. `x >> 8` gives `0x00010203` on every machine, big or little. Shifts are defined on the *value*, not on the memory layout.
+- **It applies to memory and to the wire.** Any time a multi-byte value crosses a boundary — a socket, a file, a CAN frame, a flash sector, a shared buffer between two chips — someone must agree on the order.
+- **Bit order is a separate question.** Endianness is about bytes. The order of bits inside a byte is fixed by the ISA for arithmetic, and is a bitfield-layout question for structs (see the bitfield note).
+- **"Network byte order" means big-endian.** That is a convention from the IP protocol suite, not a law. Many modern protocols are little-endian: USB, PCI, Bluetooth LE, most Modbus RTU registers are big-endian but the framing is not, RISC-V debug, Protocol Buffers varints, and almost every ARM-vendor peripheral.
+- **Some formats are mixed.** A packet can have a big-endian length and a little-endian payload. Do not assume one order for a whole message.
+
+### The classic bug
+
+```c
+uint8_t buf[4] = { 0xDE, 0xAD, 0xBE, 0xEF };   /* big-endian bytes off the wire */
+uint32_t v;
+memcpy(&v, buf, 4);
+```
+
+```
+memcpy of wire bytes -> 0xEFBEADDE   (wrong on LE, right on BE)
+```
+
+The copy is correct C — it is the *interpretation* that is wrong. This code passes every test on a big-endian build machine and fails in the field.
+
+## Detecting endianness
+
+### Compile time — the right way
+
+GCC and Clang define these:
+
+```c
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+    /* little */
+#elif __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+    /* big */
+#else
+    #error "unsupported byte order"
+#endif
+```
+
+Verified in the container:
+
+```
+#define __ORDER_LITTLE_ENDIAN__ 1234
+#define __ORDER_BIG_ENDIAN__    4321
+#define __ORDER_PDP_ENDIAN__    3412
+#define __BYTE_ORDER__ __ORDER_LITTLE_ENDIAN__
+```
+
+MSVC does not define these. For portability across all toolchains, test the target macros (`_M_IX86`, `__ARMEL__`, and so on) or force the choice from the build system.
+
+### Runtime — avoid it
+
+```c
+/* works, but it is a runtime branch that should not exist */
+static int is_little(void)
+{
+    const uint16_t probe = 1;
+    return *(const uint8_t *)&probe == 1;
+}
+```
+
+This is one of the few cases where a pointer cast is legal, because the target type is a character type. Even so, prefer the compile-time macro. A runtime test cannot be used in a `static` initialiser, cannot drive `#if`, and hides the answer from the optimiser.
+
+### `_Static_assert` your assumption
+
+If your code only supports one order, say so at compile time rather than producing wrong data on the other:
+
+```c
+_Static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__,
+               "this driver assumes a little-endian host");
+```
+
+## Why not `htons` / `htonl`
+
+`htons`, `htonl`, `ntohs`, `ntohl` come from the BSD sockets API. They work fine on a Linux server. They are the wrong tool for embedded, protocol, and library code, for eight separate reasons.
+
+**1. They only do one direction.** Host to *big-endian*. There is no `htole32` in POSIX. Half of the protocols you will meet are little-endian, and the standard set gives you nothing for them.
+
+**2. They only do 16 and 32 bits.** There is no portable `htonll`. Timestamps, 64-bit counters, and file offsets are all 64-bit.
+
+**3. They need `<arpa/inet.h>` or `<winsock2.h>`.** That pulls the sockets API into a firmware image that has no sockets. On a freestanding target the header may not exist at all.
+
+**4. The names lie about the operation.** `htonl` reads as "host to network long", but it operates on a `uint32_t`, not a `long`. On a 64-bit platform `long` is 8 bytes. The name misleads readers.
+
+**5. They are a no-op on big-endian hosts.** That is correct behaviour, but it means the swap path is never exercised on a big-endian build. Bugs in the surrounding code hide.
+
+**6. They may be macros, functions, or both.** Whether a call is inlined depends on the libc. Some embedded libcs implement them as real out-of-line calls. Some evaluate the argument twice.
+
+**7. `htons` at a struct member is a trap.** `htons(x)` returns a value in *network* order stored in a *host* variable. The type system does not track this. A `uint16_t` that has already been swapped looks exactly like one that has not. Double-swapping is a common and silent bug.
+
+**8. They do not solve alignment.** They convert a value. You still have to get the value in and out of the buffer, which is where the real problem lives.
+
+### What the compiler does with them
+
+For the record, on GCC/glibc they are efficient:
+
+```console
+$ gcc -O2 -S -masm=intel h.c
+f:                       ; htons
+        mov     eax, edi
+        rol     ax, 8
+        ret
+g:                       ; htonl
+        mov     eax, edi
+        bswap   eax
+        ret
+```
+
+Two instructions. So the objection is **not** performance. It is portability, coverage, and clarity.
+
+## Writing your own swap functions
+
+Write them once, in a header, with no dependencies.
+
+```c
+/* byteorder.h */
+#ifndef BYTEORDER_H
+#define BYTEORDER_H
+
+#include <stdint.h>
+
+static inline uint16_t bswap16(uint16_t v)
+{
+    return (uint16_t)((v >> 8) | (v << 8));
+}
+
+static inline uint32_t bswap32(uint32_t v)
+{
+    return ((v & 0x000000FFu) << 24)
+         | ((v & 0x0000FF00u) <<  8)
+         | ((v & 0x00FF0000u) >>  8)
+         | ((v & 0xFF000000u) >> 24);
+}
+
+static inline uint64_t bswap64(uint64_t v)
+{
+    return ((uint64_t)bswap32((uint32_t)v) << 32)
+         |  (uint64_t)bswap32((uint32_t)(v >> 32));
+}
+
+#endif
+```
+
+### Why this is safe
+
+- It is pure arithmetic. No pointers, no casts, no aliasing, no alignment.
+- It works identically on a big-endian and a little-endian host, because shifts operate on the value.
+- It has no headers beyond `<stdint.h>`, so it builds freestanding.
+- It is `static inline`, so it costs nothing and needs no `.c` file.
+- The `uint16_t` cast on the return of `bswap16` is required: the operands promote to `int`, and without the cast you get an `int` with rubbish in the upper bits on some paths and a `-Wconversion` warning.
+
+### What the compiler makes of it
+
+```console
+$ gcc -O2 -S -masm=intel bs.c
+t16:
+        mov     eax, edi
+        rol     ax, 8            ; one instruction
+        ret
+t32:
+        mov     eax, edi
+        bswap   eax              ; one instruction
+        ret
+t64:
+        mov     rax, rdi
+        bswap   rax              ; one instruction
+        ret
+```
+
+**GCC recognises the idiom and emits the native swap instruction.** Your portable C is exactly as fast as `htonl`, and it also covers 64 bits and both directions.
+
+### The one caveat: it needs `-O2`
+
+At `-O1` GCC does not run the idiom recogniser:
+
+```console
+$ gcc -O1 -S -masm=intel bs.c
+t32:
+        sal     eax, 24
+        shr     edx, 24
+        or      eax, edx
+        sal     edx, 8
+        and     edx, 16711680
+        or      eax, edx
+        shr     edi, 8
+        and     edi, 65280
+        or      eax, edi
+        ret                      ; 8 extra instructions
+```
+
+`-O2` and `-Os` both recognise it. If your build is stuck at `-O1`, or you are on a compiler that does not do this, add a builtin fast path:
+
+```c
+static inline uint32_t bswap32(uint32_t v)
+{
+#if defined(__GNUC__) || defined(__clang__)
+    return __builtin_bswap32(v);
+#elif defined(_MSC_VER)
+    return _byteswap_ulong(v);
+#else
+    return ((v & 0x000000FFu) << 24) | ((v & 0x0000FF00u) <<  8)
+         | ((v & 0x00FF0000u) >>  8) | ((v & 0xFF000000u) >> 24);
+#endif
+}
+```
+
+Keep the portable branch. It is the definition of correctness; the builtins are an optimisation.
+
+### Naming: encode the direction
+
+Do not write `swap_if_needed`. Name the conversion by the two orders involved:
+
+```c
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+  #define hton16(v) bswap16(v)
+  #define hton32(v) bswap32(v)
+  #define htole16(v) (v)
+  #define htole32(v) (v)
+#else
+  #define hton16(v) (v)
+  #define hton32(v) (v)
+  #define htole16(v) bswap16(v)
+  #define htole32(v) bswap32(v)
+#endif
+```
+
+Better still: skip this layer entirely. Section 5 explains why.
+
+## The better answer — serialise byte by byte
+
+Every problem above comes from one decision: **storing a multi-byte value in memory and then arguing about its layout**. Do not store it. Build the bytes yourself.
+
+```c
+/* Big-endian (network order) */
+static inline void put_be32(uint8_t *p, uint32_t v)
+{
+    p[0] = (uint8_t)(v >> 24);
+    p[1] = (uint8_t)(v >> 16);
+    p[2] = (uint8_t)(v >>  8);
+    p[3] = (uint8_t)(v      );
+}
+
+static inline uint32_t get_be32(const uint8_t *p)
+{
+    return ((uint32_t)p[0] << 24)
+         | ((uint32_t)p[1] << 16)
+         | ((uint32_t)p[2] <<  8)
+         | ((uint32_t)p[3]      );
+}
+
+/* Little-endian */
+static inline void put_le16(uint8_t *p, uint16_t v)
+{
+    p[0] = (uint8_t)(v     );
+    p[1] = (uint8_t)(v >> 8);
+}
+
+static inline uint16_t get_le16(const uint8_t *p)
+{
+    return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
+}
+```
+
+### Why this sidesteps the whole question
+
+**1. There is no host byte order in the code.** `p[0] = v >> 24` says "the most significant byte goes at offset 0". Shifts are defined on the value. That statement is true on x86, on a big-endian PowerPC, and on a hypothetical middle-endian machine. Nothing needs to be conditional, so there is no `#if` and no build configuration to get wrong.
+
+**2. There is no alignment requirement.** You are doing byte accesses. `p` can point anywhere. Confirmed at a deliberately misaligned offset:
+
+```c
+uint8_t b[8] = {0};
+put_be32(b + 1, 0xDEADBEEFu);        /* offset 1 */
+```
+```
+bytes: 00 DE AD BE EF
+round-trip: DEADBEEF
+```
+
+**3. There is no aliasing problem.** Access through `uint8_t` is explicitly permitted against any object.
+
+**4. The wire format is visible in the source.** A reviewer with the spec in hand can check `put_be32` against the diagram in one glance. There is no invisible dependency on a compiler macro.
+
+**5. The direction cannot be double-applied.** `get_be32` takes bytes and returns a value. `put_be32` takes a value and writes bytes. The types make the direction obvious. Compare with `htons`, where a swapped and an unswapped `uint16_t` are the same type.
+
+**6. It builds anywhere.** `<stdint.h>` only.
+
+**7. It composes.** A parser is just a cursor walking a buffer, and the code reads like the protocol table.
+
+### The cost — measured
+
+This is the part people do not believe:
+
+```console
+$ gcc -O2 -S -masm=intel bs.c
+
+put_be32:
+        bswap   esi
+        mov     DWORD PTR [rdi], esi     ; one swap, one store
+        ret
+
+get_be32:
+        mov     eax, DWORD PTR [rdi]
+        bswap   eax                      ; one load, one swap
+        ret
+
+put_le16:
+        mov     WORD PTR [rdi], si       ; ONE store. No work at all.
+        ret
+
+get_le16:
+        movzx   eax, WORD PTR [rdi]      ; ONE load. No work at all.
+        ret
+```
+
+GCC recognises the shift-and-or pattern, merges the four byte accesses into a single word access, and adds a `bswap` only when the host order differs from the wire order. On a big-endian host the `bswap` disappears from `put_be32` and appears in `put_le16` instead — automatically, with no `#if` in your source.
+
+**You write the most portable possible code and get the same instructions a hand-tuned cast would give you.** Same result at `-Os`. At `-O1` GCC keeps the four byte loads, which is still correct, just larger.
+
+One nuance worth knowing: the merge into a single word access happens only when the compiler knows unaligned access is allowed on the target. On a Cortex-M0 build, or with `-mno-unaligned-access`, GCC keeps the byte loads — which is exactly what you want, because it is the only correct form there. You do not have to make that decision.
+
+## A worked example — parsing a packet
+
+The protocol:
+
+| Offset | Size | Field | Order |
+| --- | --- | --- | --- |
+| 0 | 4 | magic | big |
+| 4 | 2 | version | big |
+| 6 | 2 | flags | little |
+| 8 | 8 | timestamp | big |
+| 16 | 4 | payload length | big |
+
+Note the mixed order at offset 6. This is common in real formats and it is where a "just define a struct and swap the whole thing" approach falls apart.
+
+```c
+#include <stdint.h>
+#include <stddef.h>
+
+#define HDR_SIZE 20
+
+struct hdr {
+    uint32_t magic;
+    uint16_t version;
+    uint16_t flags;
+    uint64_t timestamp;
+    uint32_t payload_len;
+};
+
+/* returns 0 on success */
+int hdr_parse(struct hdr *out, const uint8_t *buf, size_t len)
+{
+    if (len < HDR_SIZE) {
+        return -1;
+    }
+
+    out->magic       = get_be32(buf +  0);
+    out->version     = get_be16(buf +  4);
+    out->flags       = get_le16(buf +  6);   /* little, per the spec */
+    out->timestamp   = get_be64(buf +  8);
+    out->payload_len = get_be32(buf + 16);
+
+    return 0;
+}
+
+size_t hdr_write(uint8_t *buf, size_t cap, const struct hdr *in)
+{
+    if (cap < HDR_SIZE) {
+        return 0;
+    }
+
+    put_be32(buf +  0, in->magic);
+    put_be16(buf +  4, in->version);
+    put_le16(buf +  6, in->flags);
+    put_be64(buf +  8, in->timestamp);
+    put_be32(buf + 16, in->payload_len);
+
+    return HDR_SIZE;
+}
+```
+
+The struct here is **internal state only**. It is never overlaid on the buffer, never `memcpy`d to the wire, and its `sizeof` is irrelevant. `HDR_SIZE` is a constant taken from the spec, not from the compiler. That separation is the whole point.
+
+### A cursor for longer messages
+
+```c
+struct rd { const uint8_t *p; const uint8_t *end; int err; };
+
+static inline uint32_t rd_be32(struct rd *r)
+{
+    if (r->end - r->p < 4) { r->err = 1; return 0; }
+    uint32_t v = get_be32(r->p);
+    r->p += 4;
+    return v;
+}
+```
+
+Now a parser is a sequence of reads with one error check at the end. The bounds check is in one place, and no read can run past the buffer.
+
+## Floats, and other things that need care
+
+**Floating point.** IEEE-754 does not define a byte order; the host's integer endianness normally applies, but not always (ARM's old FPA format stored a `double` as two 32-bit words in the opposite order, which is why GCC still defines `__FLOAT_WORD_ORDER__` separately). Serialise a float by converting it to an integer first, then use the integer path:
+
+```c
+static inline void put_be_f32(uint8_t *p, float f)
+{
+    uint32_t u;
+    _Static_assert(sizeof u == sizeof f, "float is not 32 bits");
+    memcpy(&u, &f, sizeof u);      /* not a union, not a cast */
+    put_be32(p, u);
+}
+```
+
+`memcpy` here, for the reasons in the type-punning note.
+
+**Signed integers.** Cast to the unsigned type of the same width, serialise that, and cast back on read. Two's complement is guaranteed from C23 and is universal in practice, but shifting a negative signed value is implementation-defined or undefined, so route it through unsigned:
+
+```c
+put_be32(p, (uint32_t)value);
+int32_t value = (int32_t)get_be32(p);   /* implementation-defined pre-C23, fine everywhere real */
+```
+
+**Strings and byte arrays.** No endianness. Copy them as-is.
+
+**Text formats.** JSON, XML, and ASCII protocols have no byte order problem at all. If the format allows it, this is the cheapest fix.
+
+**Hardware registers.** A peripheral register has its own byte order, which may differ from the CPU's. Some SoCs have a byte-swap bit in a bus bridge. Read the datasheet; do not assume the register matches the core.
+
+## Summary
+
+| Question | Answer |
+| --- | --- |
+| Does endianness affect arithmetic? | No. Only memory layout and I/O. |
+| Is network order big-endian? | Yes, but many protocols are not. Read the spec. |
+| Should I use `htons`/`htonl`? | No. One direction, two widths, needs sockets headers. |
+| Is a hand-written `bswap32` slow? | No. GCC emits `bswap` at `-O2` and `-Os`. |
+| Do I need `#if __BYTE_ORDER__` in a parser? | No, if you serialise byte by byte. |
+| Are byte-at-a-time reads slow? | No. GCC merges them into one load plus one `bswap`. |
+| Is byte-at-a-time safe when misaligned? | Yes. That is one of the main reasons to use it. |
+| How do I send a `float`? | `memcpy` it to a `uint32_t`, then use the integer path. |
+| Can I overlay a struct on the buffer? | No. Byte order, alignment, and padding all break it. |
+
+**One sentence:** keep every multi-byte value inside a register-width variable where endianness does not exist, and cross the memory boundary only through explicit `p[n] = v >> k` code — the compiler turns that back into a single load or store with a swap, so the portable version is also the fast version.
+
+## Useful warnings for protocol code:
+
+| Flag | Purpose |
+| --- | --- |
+| `-Wconversion` | catches the implicit narrowing in `p[0] = v >> 24` if the cast is missing |
+| `-Wsign-conversion` | catches signed/unsigned mixups in shift expressions |
+| `-Wcast-align=strict` | flags struct-overlay casts even on tolerant targets |
+| `-Wpadded` | warns when a struct gains padding, useful while auditing |
+| `-fsanitize=undefined` | catches out-of-range shifts at runtime |
 </details>
