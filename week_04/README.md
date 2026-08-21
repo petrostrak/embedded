@@ -2244,3 +2244,629 @@ int32_t value = (int32_t)get_be32(p);   /* implementation-defined pre-C23, fine 
 | `-Wpadded` | warns when a struct gains padding, useful while auditing |
 | `-fsanitize=undefined` | catches out-of-range shifts at runtime |
 </details>
+
+<details>
+<summary>make</summary>
+
+`make` is a dependency engine with a build language bolted on. You describe
+*what depends on what*, and `make` figures out the minimum work needed to bring
+everything up to date.
+
+It does **not** know C. It knows files, timestamps, and shell commands.
+
+Run it with:
+
+```sh
+make            # build the first target in the file
+make foo        # build target 'foo'
+make -j8        # run up to 8 recipes in parallel
+make -n         # dry run: print commands, execute nothing
+```
+
+By default `make` looks for `GNUmakefile`, then `makefile`, then `Makefile`.
+Use `Makefile`.
+
+> All examples here are GNU make. BSD make differs in several places.
+
+## Targets, prerequisites, recipes
+
+The basic unit is a **rule**:
+
+```make
+target: prerequisite1 prerequisite2
+	recipe line 1
+	recipe line 2
+```
+
+| Part | Meaning |
+|---|---|
+| **target** | The file that gets produced (or a name to act on). |
+| **prerequisites** | Files that must exist and be up to date *before* the recipe runs. |
+| **recipe** | Shell commands that produce the target from the prerequisites. |
+
+A concrete rule:
+
+```make
+main.o: main.c
+	gcc -c main.c -o main.o
+```
+
+### The tab rule
+
+**Every recipe line must start with a real TAB character**, not spaces. This is
+the single most common beginner error. The message you get is:
+
+```
+Makefile:5: *** missing separator.  Stop.
+```
+
+Configure your editor: for `Makefile`, disable "expand tabs to spaces".
+
+### Each recipe line is its own shell
+
+```make
+bad:
+	cd /tmp
+	pwd        # prints your original directory, NOT /tmp
+```
+
+The `cd` happened in a shell that already exited. Chain with `&&` and `\`
+instead:
+
+```make
+good:
+	cd /tmp && pwd
+```
+
+### Recipe prefixes
+
+```make
+target:
+	@echo "building"     # @  = do not echo the command itself
+	-rm maybe-missing    # -  = ignore a non-zero exit status
+```
+
+Without `@`, make prints every command before running it. Without `-`, the
+first failing command aborts the build.
+
+## How make decides something is out of date
+
+The algorithm, applied recursively:
+
+1. To build target `T`, first bring all of `T`'s prerequisites up to date.
+2. Then rebuild `T` if:
+   - `T` does not exist, **or**
+   - any prerequisite has a **modification time newer than `T`**.
+3. Otherwise, do nothing and report `'T' is up to date.`
+
+That is the whole rule. It is **timestamps only** — not content hashes, not
+compiler flags, not file size.
+
+### Worked example
+
+```make
+app: main.o util.o
+	gcc main.o util.o -o app
+
+main.o: main.c
+	gcc -c main.c -o main.o
+
+util.o: util.c
+	gcc -c util.c -o util.o
+```
+
+You edit `util.c`:
+
+```
+util.c   is newer than  util.o   ->  rebuild util.o
+util.o   is now newer than  app  ->  relink app
+main.c   is older than  main.o   ->  skip main.o        <- the win
+```
+
+Only one compile plus one link, instead of two compiles plus one link.
+
+### Consequences you will hit
+
+- **Editing a header rebuilds nothing** unless you declared the dependency.
+  This causes real, confusing bugs (stale struct layouts, ODR-style
+  mismatches). Section 7 fixes it properly.
+- **Changing `CFLAGS` rebuilds nothing.** No timestamp changed. Run
+  `make clean` after changing flags, or use a flags-hash sentinel file.
+- **`touch` alone triggers a rebuild**, because only the timestamp matters.
+- **Clock skew matters.** Files from a network share or a restored archive can
+  carry future timestamps and confuse make. It usually warns.
+
+## Variables: `=` vs `:=`
+
+Two flavours. The difference is *when the right-hand side is evaluated*.
+
+### `:=` — simply expanded (evaluated once, immediately)
+
+```make
+CC := gcc
+CFLAGS := -Wall -O2
+SRCS := $(wildcard src/*.c)
+```
+
+The value is computed at the point of the assignment and frozen.
+
+### `=` — recursively expanded (evaluated every time it is used)
+
+```make
+CC = gcc
+CFLAGS = $(WARN) -O2
+WARN = -Wall -Wextra          # defined AFTER, and it still works
+```
+
+`$(CFLAGS)` is not resolved until something uses it, so forward references are
+fine.
+
+### The trap
+
+```make
+# Recursive: infinite loop, make errors out
+CFLAGS = $(CFLAGS) -g
+
+# Simple: fine, appends to the current value
+CFLAGS := $(CFLAGS) -g
+```
+
+Another trap — accidental repeated work:
+
+```make
+SRCS = $(shell find . -name '*.c')   # runs 'find' EVERY time $(SRCS) is used
+SRCS := $(shell find . -name '*.c')  # runs 'find' exactly once
+```
+
+### Rule of thumb
+
+> **Use `:=` by default.** Reach for `=` only when you deliberately want late
+> evaluation (forward references, or a value that depends on the target being
+> built).
+
+### The other assignment operators
+
+| Operator | Meaning |
+|---|---|
+| `:=` | Simply expanded. Evaluate now. |
+| `=` | Recursively expanded. Evaluate on use. |
+| `?=` | Assign only if the variable is not already set. |
+| `+=` | Append. Keeps the flavour of the original assignment. |
+| `::=` | POSIX spelling of `:=`. Identical behaviour. |
+| `!=` | Run a shell command, assign its output (like `:= $(shell ...)`). |
+
+`?=` is how you let users override things from the command line or the
+environment:
+
+```make
+CC ?= gcc
+PREFIX ?= /usr/local
+```
+
+```sh
+make CC=clang            # command line wins over everything
+```
+
+### Trailing whitespace is significant
+
+```make
+DIR := build     # this comment leaves 'build' plus trailing spaces
+```
+
+Anything before the `#` is part of the value. Put comments on their own line.
+
+## Automatic variables
+
+Set by make inside each recipe, based on the rule being executed.
+
+| Variable | Value | Typical use |
+|---|---|---|
+| `$@` | The target | Output filename |
+| `$<` | The **first** prerequisite | Input to the compiler |
+| `$^` | **All** prerequisites, duplicates removed | Inputs to the linker |
+| `$+` | All prerequisites, duplicates kept, order preserved | Link order tricks |
+| `$?` | Prerequisites **newer than the target** | Incremental archives |
+| `$*` | The stem matched by `%` in a pattern rule | Deriving sibling names |
+| `$(@D)` / `$(@F)` | Directory / file part of `$@` | `mkdir -p $(@D)` |
+| `$(<D)` / `$(<F)` | Directory / file part of `$<` | |
+
+### Applied
+
+```make
+app: main.o util.o log.o
+	$(CC) $^ -o $@
+#        |     |
+#        |     +-- app
+#        +-------- main.o util.o log.o
+
+main.o: main.c config.h
+	$(CC) $(CFLAGS) -c $< -o $@
+#	                   |     |
+#	                   |     +-- main.o
+#	                   +-------- main.c   (NOT config.h)
+```
+
+This is the key idiom: **`$<` for compiling, `$^` for linking.**
+
+Compiling with `$^` would be wrong — it would pass `config.h` to the compiler
+as if it were a source file.
+
+### Why `$*` is useful
+
+In `%.o: %.c`, building `src/parser.o` gives `$* = src/parser`. So you can name
+a sibling file:
+
+```make
+%.o: %.c
+	$(CC) $(CFLAGS) -c $< -o $@ -MF $*.d
+```
+
+### Creating output directories
+
+`$(@D)` saves you from "No such file or directory" on a fresh clone:
+
+```make
+build/%.o: src/%.c
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) -c $< -o $@
+```
+
+## Pattern rules
+
+Writing one rule per object file does not scale. A **pattern rule** uses `%` as
+a wildcard stem:
+
+```make
+%.o: %.c
+	$(CC) $(CFLAGS) -c $< -o $@
+```
+
+Read it as: "to make any `X.o`, you need `X.c`, and here is how".
+
+The `%` matches the same text — the **stem** — on both sides. For
+`parser.o`, the stem is `parser` and the prerequisite becomes `parser.c`.
+
+### With separate source and build directories
+
+```make
+SRC_DIR := src
+OBJ_DIR := build
+
+SRCS := $(wildcard $(SRC_DIR)/*.c)
+OBJS := $(patsubst $(SRC_DIR)/%.c,$(OBJ_DIR)/%.o,$(SRCS))
+
+$(OBJ_DIR)/%.o: $(SRC_DIR)/%.c
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) -c $< -o $@
+```
+
+`patsubst` transforms `src/main.c src/util.c` into
+`build/main.o build/util.o`.
+
+### Adding a shared prerequisite
+
+Every object should rebuild when `config.h` changes:
+
+```make
+%.o: %.c config.h
+	$(CC) $(CFLAGS) -c $< -o $@
+```
+
+This works but is coarse — *every* object rebuilds even if it never includes
+`config.h`. Section 7 does it precisely instead.
+
+### Static pattern rules
+
+A pattern rule applies to anything that matches. A **static pattern rule**
+restricts it to an explicit list:
+
+```make
+$(OBJS): $(OBJ_DIR)/%.o: $(SRC_DIR)/%.c
+	$(CC) $(CFLAGS) -c $< -o $@
+```
+
+Format: `targets: target-pattern: prereq-pattern`. Safer in larger projects,
+because it cannot accidentally match unrelated files.
+
+### Built-in rules
+
+GNU make already ships a `%.o: %.c` rule that runs
+`$(CC) $(CPPFLAGS) $(CFLAGS) -c`. This is why a bare `make main` sometimes
+works with no Makefile at all. It also causes surprises. To see them:
+
+```sh
+make -p | less        # print the full database, built-ins included
+```
+
+Disable them with `make -r`, or in the file:
+
+```make
+MAKEFLAGS += --no-builtin-rules
+```
+
+## Header dependency tracking (`-MMD -MP`)
+
+### The problem
+
+```make
+main.o: main.c
+	$(CC) -c $< -o $@
+```
+
+You edit `util.h`, which `main.c` includes. Make sees `main.c` unchanged and
+skips the rebuild. You now have an object file compiled against an old header.
+The build "succeeds" and the program misbehaves.
+
+Writing the dependencies by hand does not work — `#include` chains are deep and
+they change constantly.
+
+### The solution
+
+The compiler already parses every `#include`. Ask it to write down what it
+found.
+
+| Flag | Effect |
+|---|---|
+| `-MD` | Generate a `.d` dependency file **as a side effect of compiling**. |
+| `-MMD` | Same, but **skip system headers** (`<stdio.h>` etc.). Usually what you want. |
+| `-MP` | Add a dummy, prerequisite-less target for each header. |
+| `-MF <file>` | Choose where to write the `.d` file. |
+
+Add them to `CPPFLAGS`:
+
+```make
+DEPFLAGS := -MMD -MP
+```
+
+Compiling `main.c` then produces `main.o` **and** `main.d` containing something
+like:
+
+```make
+main.o: main.c util.h config.h
+```
+
+That is a valid make rule. Include it, and make now knows about the headers.
+
+### Why `-MP`
+
+Without `-MP`, deleting or renaming `util.h` breaks the build:
+
+```
+make: *** No rule to make target 'util.h', needed by 'main.o'.  Stop.
+```
+
+Make is reading a stale `.d` file that still references the deleted header, and
+it has no way to produce it. `-MP` appends empty targets:
+
+```make
+main.o: main.c util.h config.h
+
+util.h:
+config.h:
+```
+
+Now make can "build" `util.h` by doing nothing, so it proceeds and recompiles
+`main.c` — which regenerates a correct `.d` file. `-MP` costs nothing. Always
+use it.
+
+### Why `-include` and not `include`
+
+```make
+DEPS := $(OBJS:.o=.d)
+-include $(DEPS)
+```
+
+- `$(OBJS:.o=.d)` is substitution reference shorthand: it turns
+  `build/main.o` into `build/main.d`.
+- **`include`** fails hard if a file is missing. On a clean checkout no `.d`
+  files exist yet, so the build would never start.
+- **`-include`** (leading dash) silently ignores missing files. First build:
+  nothing to include, everything compiles anyway, and the `.d` files appear as
+  a side effect. Second build onwards: full header tracking.
+
+This is a genuine bootstrap: the information make needs is produced by the
+build it is about to run. It works because a missing `.d` file only happens
+when the corresponding `.o` is also missing, and that object is getting
+compiled regardless.
+
+### `-MMD` versus `-MD`
+
+`-MMD` omits system headers. Upgrading libc will not force a full rebuild, and
+your `.d` files stay small. If you need bit-exact reproducibility against
+toolchain changes, use `-MD`. For everyday work, `-MMD`.
+
+## `.PHONY`
+
+A phony target is a *name for an action*, not a file to produce.
+
+```make
+.PHONY: clean
+clean:
+	rm -rf $(OBJ_DIR) $(TARGET)
+```
+
+### Why it is needed
+
+Without `.PHONY`, if a file named `clean` ever exists in your directory:
+
+```sh
+$ touch clean
+$ make clean
+make: 'clean' is up to date.
+```
+
+Make applied its normal logic: the target `clean` exists, it has no
+prerequisites, so nothing can be newer than it. Nothing to do.
+
+`.PHONY` tells make "this name is never a file — always run the recipe, never
+check timestamps". It also skips the implicit-rule search, which makes phony
+targets slightly faster.
+
+### The usual set
+
+```make
+.PHONY: all clean install test run debug release help
+```
+
+### `all` and the default target
+
+The **first** target in the file is what a bare `make` builds. Convention is to
+make it a phony `all` that depends on the real deliverables:
+
+```make
+.PHONY: all
+all: $(TARGET)
+```
+
+Put this near the top. It documents intent, and it lets you add a second
+deliverable later without changing how `make` behaves. Alternatively, be
+explicit:
+
+```make
+.DEFAULT_GOAL := all
+```
+
+### A phony target with a real file name is a trap
+
+```make
+.PHONY: test
+test: $(TARGET)          # and 'test' is also a directory in your repo
+	./$(TARGET) --selftest
+```
+
+Marking a real file phony means it gets rebuilt every time, and anything
+depending on it does too. Only mark true actions as phony.
+
+## Complete reference Makefile
+
+```make
+# ---- Toolchain -------------------------------------------------------------
+CC       := gcc
+CFLAGS   := -std=c17 -Wall -Wextra -Wpedantic -O2
+CPPFLAGS :=
+LDFLAGS  :=
+LDLIBS   := -lm
+
+# ---- Layout ----------------------------------------------------------------
+SRC_DIR := src
+OBJ_DIR := build
+TARGET  := app
+
+SRCS := $(wildcard $(SRC_DIR)/*.c)
+OBJS := $(patsubst $(SRC_DIR)/%.c,$(OBJ_DIR)/%.o,$(SRCS))
+DEPS := $(OBJS:.o=.d)
+
+DEPFLAGS := -MMD -MP
+
+# ---- Goals -----------------------------------------------------------------
+.PHONY: all
+all: $(TARGET)
+
+$(TARGET): $(OBJS)
+	$(CC) $(LDFLAGS) $^ -o $@ $(LDLIBS)
+
+$(OBJ_DIR)/%.o: $(SRC_DIR)/%.c
+	@mkdir -p $(@D)
+	$(CC) $(CPPFLAGS) $(DEPFLAGS) $(CFLAGS) -c $< -o $@
+
+.PHONY: debug
+debug: CFLAGS := -std=c17 -Wall -Wextra -g3 -O0 -fsanitize=address,undefined
+debug: LDFLAGS += -fsanitize=address,undefined
+debug: clean all
+
+.PHONY: run
+run: $(TARGET)
+	./$(TARGET)
+
+.PHONY: clean
+clean:
+	rm -rf $(OBJ_DIR) $(TARGET)
+
+.PHONY: help
+help:
+	@echo "Targets: all debug run clean help"
+
+-include $(DEPS)
+```
+
+Notes on the above:
+
+- `debug: CFLAGS := ...` is a **target-specific variable**. The new value
+  applies to that target and everything it depends on. Because flag changes do
+  not alter timestamps, `debug` depends on `clean` to force a full rebuild.
+- `CPPFLAGS` is the conventional home for `-I` and `-D`; `CFLAGS` for language
+  and optimisation options. Keeping them separate matches the built-in rules
+  and what users expect to override.
+- `-include $(DEPS)` sits at the bottom by convention, so no included file can
+  accidentally become the default goal.
+
+## Quick reference
+
+### Useful functions
+
+```make
+$(wildcard src/*.c)                       # glob the filesystem
+$(patsubst %.c,%.o,$(SRCS))               # pattern substitution
+$(SRCS:.c=.o)                             # shorthand for the above
+$(notdir src/main.c)                      # -> main.c
+$(basename src/main.c)                    # -> src/main
+$(addprefix build/,main.o util.o)         # -> build/main.o build/util.o
+$(shell git rev-parse --short HEAD)       # run a command
+$(foreach d,$(DIRS),-I$(d))               # loop
+$(if $(DEBUG),-g,-O2)                     # conditional
+```
+
+### Useful command-line flags
+
+| Flag | Effect |
+|---|---|
+| `-n` | Dry run. Print commands without running them. |
+| `-j N` | Run N recipes in parallel. |
+| `-B` | Force rebuild everything. |
+| `-k` | Keep going after errors. |
+| `-C dir` | Change directory first. |
+| `-p` | Dump the variable and rule database. |
+| `-r` | Disable built-in rules. |
+| `--debug=b` | Explain why each target is being rebuilt. |
+| `-t` | Touch targets instead of rebuilding (dangerous). |
+
+### Debugging a Makefile
+
+```make
+$(info CFLAGS is $(CFLAGS))          # print during parse
+$(warning suspicious value: $(X))    # print with file:line prefix
+$(error missing required variable)   # print and abort
+```
+
+```sh
+make --debug=b            # why is this rebuilding?
+make -p | grep '^CFLAGS'  # what is this variable's final value?
+make -n                   # what would run?
+```
+
+### Common errors decoded
+
+| Message | Cause |
+|---|---|
+| `missing separator` | Spaces instead of a TAB on a recipe line. |
+| `No rule to make target 'x.h', needed by 'y.o'` | Stale `.d` file for a deleted header. Add `-MP`. |
+| `Nothing to be done for 'all'` | Target exists and is newer than its prerequisites. |
+| `'clean' is up to date` | A file named `clean` exists, and `clean` is not `.PHONY`. |
+| `recipe commences before first target` | An indented line before any rule. |
+| Recursion error on `X = $(X) ...` | Use `:=`, not `=`. |
+
+
+## Mental model, condensed
+
+1. A rule says: **this file** comes from **these files** via **these commands**.
+2. Make rebuilds a target when it is missing, or when a prerequisite has a
+   newer timestamp. Timestamps only — nothing else.
+3. Pattern rules generalise one rule to a whole class of files.
+4. `$@` is what you are making. `$<` is the main input. `$^` is all the inputs.
+5. `:=` evaluates now; `=` evaluates later. Prefer `:=`.
+6. `-MMD -MP` lets the compiler write your header dependencies for you;
+   `-include $(DEPS)` feeds them back in.
+7. `.PHONY` marks names that are actions, not files.
+
+Everything else in make is elaboration on these seven points.
+</details>
