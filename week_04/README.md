@@ -17,13 +17,13 @@
 - [x] **Endianness.** Little vs big; byte swapping for protocol work.
   - [x] Write your own `bswap16`/`bswap32` rather than relying on `htons` and friends.
   - [ ] Note why serialising byte-by-byte into a `uint8_t[]` sidesteps the whole question.
-- [ ] **`make`:**
-  - [ ] Targets, prerequisites, recipes; how make decides something is out of date.
-  - [ ] Pattern rules (`%.o: %.c`).
+- [x] **`make`:**
+  - [x] Targets, prerequisites, recipes; how make decides something is out of date.
+  - [x] Pattern rules (`%.o: %.c`).
   - [ ] Automatic variables: `$@`, `$<`, `$^`.
-  - [ ] Variables and `:=` vs `=`.
+  - [x] Variables and `:=` vs `=`.
   - [ ] Header dependency tracking with `-MMD -MP` and `-include $(DEPS)`.
-  - [ ] `.PHONY` for `clean` / `all`.
+  - [x] `.PHONY` for `clean` / `all`.
 
 ## Project — `bitops.h` + a hand-written Makefile
 
