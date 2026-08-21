@@ -20,9 +20,9 @@
 - [x] **`make`:**
   - [x] Targets, prerequisites, recipes; how make decides something is out of date.
   - [x] Pattern rules (`%.o: %.c`).
-  - [ ] Automatic variables: `$@`, `$<`, `$^`.
+  - [x] Automatic variables: `$@`, `$<`, `$^`.
   - [x] Variables and `:=` vs `=`.
-  - [ ] Header dependency tracking with `-MMD -MP` and `-include $(DEPS)`.
+  - [x] Header dependency tracking with `-MMD -MP` and `-include $(DEPS)`.
   - [x] `.PHONY` for `clean` / `all`.
 
 ## Project — `bitops.h` + a hand-written Makefile
