@@ -57,15 +57,6 @@
   ```
   - [ ] Expect `-Wconversion` to fight you on the RGB565 and CRC code. Fix it with explicit casts you can justify, not blanket ones.
 
-### Tests
-
-- [ ] `reverse_bits`: 0, `0xFFFFFFFF`, `0x00000001`, `0x80000000`, and reverse-twice-is-identity over a set of values.
-- [ ] `popcount`: 0, all-ones, single bits, and the two implementations agreeing.
-- [ ] `find_first_set`: 0 (documented case), bit 0, bit 31.
-- [ ] RGB565: pack/unpack round trip, and the corners (black, white, pure R/G/B).
-- [ ] `crc8`: a known-answer vector (e.g. the ASCII string `"123456789"`), plus empty input.
-- [ ] Macro tests: `FIELD_SET` doesn't disturb bits outside its mask; an oversized value is truncated rather than spilling.
-
 ### The Makefile
 
 - [ ] Variables: `CC`, `CFLAGS`, `SRCS`, `OBJS`, `DEPS`, `TARGET`.
@@ -74,7 +65,6 @@
 - [ ] A link rule using `$^`.
 - [ ] Add `-MMD -MP` to `CFLAGS` and `-include $(DEPS)` near the bottom.
 - [ ] `.PHONY: all clean test`, and a `clean` that removes objects, deps, and the binary.
-- [ ] A `test` target that builds and runs the test binary.
 - [ ] No CMake this week — you need to have felt this before you let a tool do it.
 
 ### Prove the incremental build
