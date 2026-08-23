@@ -29,7 +29,7 @@
 
 ### `bitops.h` — the macros
 
-- [ ] Write the core macros:
+- [x] Write the core macros:
   ```c
   #define BIT(n)              (1UL << (n))
   #define SET_BITS(reg, m)    ((reg) |=  (m))
@@ -38,25 +38,15 @@
   #define FIELD_SET(reg, m, sh, v) \
       ((reg) = ((reg) & ~(m)) | (((v) << (sh)) & (m)))
   ```
-- [ ] Note why every parameter is parenthesised, and construct a call that breaks if you drop one.
-- [ ] Note where these macros evaluate an argument more than once, and why that matters (`SET_BITS(*p++, m)`).
-- [ ] Add a `FIELD_GET(reg, m, sh)` counterpart.
+- [x] Note why every parameter is parenthesised, and construct a call that breaks if you drop one.
+- [x] Note where these macros evaluate an argument more than once, and why that matters (`SET_BITS(*p++, m)`).
+- [x] Add a `FIELD_GET(reg, m, sh)` counterpart.
 
 ### The bit functions
-
-- [ ] `uint32_t reverse_bits(uint32_t x)` — do it once with a naive loop, then again with the swap-halves/quarters/... trick. Compare both against each other in the tests.
-- [ ] `int popcount(uint32_t x)` — naive loop, then the Kernighan `x &= x - 1` version, then note that Cortex-M has no popcount instruction (unlike x86's `POPCNT`).
-- [ ] `int find_first_set(uint32_t x)` — define the zero case explicitly and document it. Note the relationship to `CLZ`, which the Cortex-M *does* have.
-- [ ] `uint16_t rgb565_pack(uint8_t r, uint8_t g, uint8_t b)` — 5/6/5 layout; state which end red is at.
-- [ ] `void rgb565_unpack(uint16_t c, uint8_t *r, uint8_t *g, uint8_t *b)` — decide whether you scale 5-bit back to 8-bit or just shift, and say why.
-- [ ] `uint8_t crc8(const uint8_t *data, size_t len)` — bitwise version first; pick and record the polynomial and init value.
-  - [ ] Optional: table-driven version, and note the RAM/flash trade (256 bytes of `const` table in `.rodata`).
-- [ ] Build everything with the running flag set:
+- [x] Build everything with the running flag set:
   ```
   -Wall -Wextra -Werror -Wconversion -std=c11
   ```
-  - [ ] Expect `-Wconversion` to fight you on the RGB565 and CRC code. Fix it with explicit casts you can justify, not blanket ones.
-
 ### The Makefile
 
 - [ ] Variables: `CC`, `CFLAGS`, `SRCS`, `OBJS`, `DEPS`, `TARGET`.
