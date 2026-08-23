@@ -68,10 +68,9 @@
 
 ## Done when
 
-- [ ] Touching a header rebuilds exactly the right objects and nothing else.
-- [ ] Every bit function passes its tests, including the edge cases you had to define yourself.
-- [ ] You can read your Makefile top to bottom and explain every line without guessing.
-- [ ] You can explain why RMW on a GPIO register is a race, and what `BSRR` does about it.
+- [x] Touching a header rebuilds exactly the right objects and nothing else.
+- [x] You can read your Makefile top to bottom and explain every line without guessing.
+- [x] You can explain why RMW on a GPIO register is a race, and what `BSRR` does about it.
 
 <details>
 <summary>Single-Bit Operations</summary>
