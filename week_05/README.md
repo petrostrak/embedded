@@ -331,3 +331,274 @@ Write the answers. Then check them below.
 5. `uint32_t`. The product is 13513500. This is larger than the 16-bit maximum of 65535.
 6. `P = V * I`, `P = I * I * R`, `P = V * V / R`
 </details>
+
+<details>
+<summary>Series and parallel</summary>
+
+## The two rules
+
+| Connection | Formula | Shared quantity | Quantity that adds |
+|---|---|---|---|
+| Series | `Rt = R1 + R2 + ... + Rn` | Current is the same in each resistor. | Voltages add. |
+| Parallel | `1 / Rt = 1/R1 + 1/R2 + ... + 1/Rn` | Voltage is the same across each resistor. | Currents add. |
+
+### Series
+
+```
+  ---[ R1 ]---[ R2 ]---
+```
+
+One path only. The same current must pass through both parts.
+Each part drops its own voltage. Apply Ohm's law two times and add:
+
+```
+Vt = V1 + V2 = I*R1 + I*R2 = I*(R1 + R2)
+Rt = Vt / I  = R1 + R2
+```
+
+### Parallel
+
+```
+      +---[ R1 ]---+
+  ----+            +----
+      +---[ R2 ]---+
+```
+
+Two paths. Both ends of each resistor are at the same two nodes,
+so both see the same voltage. The currents add:
+
+```
+It = I1 + I2 = V/R1 + V/R2 = V*(1/R1 + 1/R2)
+1/Rt = It / V = 1/R1 + 1/R2
+```
+
+### Short forms for parallel
+
+| Case | Formula | Example |
+|---|---|---|
+| Two resistors | `Rt = (R1 * R2) / (R1 + R2)` | 330 ∥ 470 = 155100 / 800 = 193.9 Ω |
+| N equal resistors | `Rt = R / N` | 4 x 100 Ω = 25 Ω |
+| One resistor much larger | `Rt ≈ smaller value` | 100 Ω ∥ 100 kΩ = 99.9 Ω |
+
+Note: `(R1 * R2) / (R1 + R2)` is only valid for **two** resistors.
+For three or more, fold the pairs one at a time, or use the reciprocal sum.
+
+## Which connection always gives less than the smallest resistor?
+
+**Parallel.** The result is always smaller than the smallest resistor in the group.
+Series is always larger than the largest resistor.
+
+### Why — the algebra
+
+Take the two-resistor form and group it:
+
+```
+Rt = (R1 * R2) / (R1 + R2) = R1 * [ R2 / (R1 + R2) ]
+```
+
+`R2 / (R1 + R2)` is a fraction that is always less than 1, because the
+denominator holds `R2` plus a positive value. So `Rt < R1`.
+Group the same expression the other way and you get `Rt < R2`.
+Therefore `Rt` is below both values.
+
+### Why — the physical reason
+
+A resistor is a restriction on current. When you add a second path,
+you give the current one more way to pass. The total current rises
+for the same voltage. From `R = V / I`, a larger `I` at a fixed `V`
+means a smaller `R`.
+
+You can never make the flow harder by opening one more path.
+
+### Why — conductance makes it obvious
+
+Conductance is `G = 1 / R`, in siemens. The parallel rule is a plain sum:
+
+```
+Gt = G1 + G2 + ... + Gn
+```
+
+A sum of positive values is larger than its largest term.
+So `Gt > Gmax`, and `Rt = 1 / Gt < Rmin`. The result follows directly.
+
+### Useful bounds
+
+For two resistors, the answer is trapped in a narrow range:
+
+```
+Rmin / 2  <=  Rt  <  Rmin
+```
+
+The lower limit occurs when both resistors are equal.
+Use this to check your arithmetic in one second. For 330 ∥ 470,
+the answer must sit between 165 Ω and 330 Ω. 193.9 Ω passes the check.
+
+## Bench verification
+
+Use two resistors with different values. 330 Ω and 470 Ω are good choices.
+Both are large enough to ignore the meter leads, and small enough to be stable.
+
+### Step 0 — Prepare the meter
+
+1. Select the resistance range. Use autorange if it is available.
+2. Touch the two probes together. Read the value.
+   This is the lead resistance, normally 0.2 Ω to 0.5 Ω.
+   Subtract it from every measurement, or use the REL/ZERO button.
+3. Never measure resistance in a powered circuit. Remove the supply first
+   and let the capacitors discharge. A live circuit gives a false reading and
+   can damage the meter.
+4. Hold the resistor by the body, not the leads. Your fingers add a parallel path.
+
+### Step 1 — Measure each resistor alone
+
+| Part | Marked | Tolerance | Allowed range | Measured |
+|---|---|---|---|---|
+| R1 | 330 Ω | 5% | 313.5 to 346.5 Ω | ______ |
+| R2 | 470 Ω | 5% | 446.5 to 493.5 Ω | ______ |
+
+Record the measured values. Use these, not the marked values, in the checks below.
+
+### Step 2 — Series
+
+Connect the resistors end to end on a breadboard.
+Measure across the two outer ends.
+
+```
+Predicted: Rt = R1 + R2 = 330 + 470 = 800 Ω
+Allowed range with 5% parts: 760 to 840 Ω
+```
+
+Compare against the sum of your **measured** values. Agreement should be
+inside 1%. A larger error points to a bad breadboard contact.
+
+Also confirm the rule: the result is above 470 Ω, the larger part.
+
+### Step 3 — Parallel
+
+Connect both resistors between the same two breadboard rows.
+Measure across those two rows.
+
+```
+Predicted: Rt = (330 * 470) / (330 + 470) = 155100 / 800 = 193.9 Ω
+Allowed range with 5% parts: 184.2 to 203.6 Ω
+```
+
+Confirm the rule: the result is below 330 Ω, the smaller part.
+Also confirm the bound: it is above 165 Ω, which is half of the smaller part.
+
+### Step 4 — Optional extra check
+
+Use two equal resistors, for example 1 kΩ and 1 kΩ.
+
+- Series must read near 2 kΩ.
+- Parallel must read near 500 Ω, which is exactly half.
+
+This is the fastest way to prove that you wired the parallel connection
+and not the series connection.
+
+### Troubleshooting the bench result
+
+| Symptom | Probable cause |
+|---|---|
+| Reading is unstable or drifts | Bad breadboard contact, or a hand on the leads. |
+| Parallel reads the same as one resistor | One resistor is not connected. Check both rows. |
+| Series reads much too low | The resistors share a row and are in parallel. |
+| Small values read high by 0.3 Ω | Lead resistance is not subtracted. |
+| Reading is far outside tolerance | Wrong colour code read, or the part is damaged. |
+
+## Firmware code
+
+```c
+#include <stdint.h>
+#include <stddef.h>
+
+/* Series: a plain sum. Overflow is the only risk. */
+uint32_t r_series_ohm(const uint32_t *r, size_t n)
+{
+    uint64_t sum = 0U;
+    for (size_t i = 0U; i < n; i++) {
+        sum += r[i];
+    }
+    return (sum > UINT32_MAX) ? UINT32_MAX : (uint32_t)sum;
+}
+
+/* Parallel, two resistors. Rounded. */
+uint32_t r_parallel_ohm(uint32_t r1, uint32_t r2)
+{
+    if (r1 == 0U || r2 == 0U) {
+        return 0U;                          /* a short circuit wins */
+    }
+    /* 1 MΩ x 1 MΩ = 1e12. This overflows uint32_t. Use 64-bit for the product. */
+    uint64_t num = (uint64_t)r1 * (uint64_t)r2;
+    uint32_t den = r1 + r2;                 /* safe: both are below 2^31 in practice */
+    return (uint32_t)((num + (den / 2U)) / den);
+}
+
+/* Parallel, N resistors. Fold the pairs. */
+uint32_t r_parallel_n_ohm(const uint32_t *r, size_t n)
+{
+    if (n == 0U) {
+        return 0U;
+    }
+    uint32_t acc = r[0];
+    for (size_t i = 1U; i < n; i++) {
+        acc = r_parallel_ohm(acc, r[i]);
+    }
+    return acc;
+}
+```
+
+**Rounding note.** Pairwise folding rounds at each step.
+For three or more resistors, work in milliohms, or accept an error of
+a few ohms. For a self test that only needs a pass or fail decision,
+compare against a window instead of an exact value.
+
+### Assertion for a design check
+
+```c
+/* Use the bound as a cheap unit test. */
+#include <assert.h>
+
+void test_parallel_bound(void)
+{
+    uint32_t rt = r_parallel_ohm(330U, 470U);
+    assert(rt < 330U);          /* parallel is below the smallest part */
+    assert(rt >= 330U / 2U);    /* and at or above half of it          */
+}
+```
+
+## Where this appears in firmware and on the board
+
+| Case | What happens |
+|---|---|
+| I2C pull-ups on two stacked boards | Two 4.7 kΩ pull-ups in parallel give 2.35 kΩ. The bus rise time changes and the sink current doubles. Fit the pull-up on one board only. |
+| Shunt resistors in parallel | Two 200 mΩ parts give 100 mΩ and double the power rating. Recalculate the current scale factor in the firmware. |
+| ADC source impedance | The ADC sees the divider legs in parallel, `R1 ∥ R2`. Keep this below the value in the datasheet, or the sample capacitor cannot charge in time. |
+| Extra load on a divider | Any load resistance appears in parallel with the lower leg. The divider output falls. |
+| Series resistors for a high voltage | Series parts split the voltage, so each part stays inside its own voltage rating. |
+| Resistance to reach a value you cannot buy | Series adds, parallel reduces. Two 1 kΩ parts give 2 kΩ or 500 Ω. |
+
+## Recall drill
+
+Write the answers, then check below.
+
+1. Give the series formula and the parallel formula.
+2. Which connection always gives less than the smallest resistor? State the reason in one sentence.
+3. 330 Ω and 470 Ω in series. Value?
+4. 330 Ω and 470 Ω in parallel. Value?
+5. Five 100 Ω resistors in parallel. Value?
+6. Two 4.7 kΩ pull-ups on the same line. Value?
+7. Why does `(R1 * R2) / (R1 + R2)` need a 64-bit product in C?
+8. Without a calculator, give the range that 220 ∥ 680 must fall inside.
+
+**Answers**
+
+1. `Rt = R1 + R2 + ...` and `1/Rt = 1/R1 + 1/R2 + ...`
+2. Parallel. Each added path lets more current pass for the same voltage, and `R = V / I` falls when `I` rises.
+3. 800 Ω
+4. 193.9 Ω
+5. 20 Ω
+6. 2.35 kΩ
+7. Two large values, for example 1 MΩ each, give a product of 1e12. This is above the 32-bit limit of about 4.29e9.
+8. Between 110 Ω and 220 Ω. The true value is 166.4 Ω.
+</details>
