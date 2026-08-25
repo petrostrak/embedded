@@ -98,3 +98,240 @@
 - [ ] You have kept the potentiometer divider wiring and its notes — it is the ADC input in Week 18.
 - [ ] You can explain out loud, from memory: why the measured LED current missed the calculated 5 mA, why the divider sagged under load, and what a floating input actually reads.
 - [ ] You can explain from memory why I²C needs pull-ups, in terms of what an open-drain output can and cannot drive.
+
+<details>
+<summary>Ohm's law</summary>
+
+# Ohm's Law in Embedded C — Reference Note
+
+## The three forms
+
+Ohm's law states that the current through a conductor between two points is directly proportional to the potential difference across the two points. 
+
+$I = \frac{V}{R}$
+
+> R είναι η τιμή της αντίστασης σε μονάδες Ohm (Ω).  
+> V είναι η διαφορά δυναμικού στα άκρα της αντίστασης, σε μονάδες Volt (V).  
+> I είναι το ρεύμα το οποίο διαρρέει την αντίσταση μετρημένο σε Ampère (A).
+
+## Related formula: power
+
+Power comes from Ohm's law and `P = V * I`.
+
+| Form | Use |
+|---|---|
+| `P = V * I` | Both values are known. |
+| `P = I * I * R` | Current through a resistor is known. Use for shunt and trace heating. |
+| `P = V * V / R` | Voltage across a resistor is known. Use for pull-up and divider loss. |
+
+## Units: the rule that removes floating point
+
+Firmware often has no FPU. Scaled integers are faster and safe.
+Select the units so that the scale factors cancel.
+
+| Identity | Example |
+|---|---|
+| `Ω = mV / mA` | 3300 mV / 10 mA = 330 Ω |
+| `mV = mA * Ω` | 10 mA x 330 Ω = 3300 mV |
+| `mA = mV / Ω` | 3300 mV / 330 Ω = 10 mA |
+| `mA = µV / mΩ` | 5000 µV / 100 mΩ = 50 mA |
+| `µW = mV * mA` | 2000 mV x 10 mA = 20000 µW = 20 mW |
+
+Keep the unit in the variable name. This prevents most scale errors.
+
+```c
+uint32_t v_mv;      /* millivolts */
+uint32_t i_ma;      /* milliamps  */
+uint32_t r_ohm;     /* ohms       */
+uint32_t r_mohm;    /* milliohms  */
+```
+
+## Example: LED series resistor
+
+Find the resistor value. Rearranged form: `R = V / I`.
+The voltage across the resistor is the supply voltage minus the LED forward voltage.
+
+```c
+#include <stdint.h>
+
+/* R = (Vsupply - Vf) / I   ->   Ω = mV / mA */
+uint32_t led_resistor_ohm(uint32_t vsupply_mv, uint32_t vf_mv, uint32_t i_ma)
+{
+    if (i_ma == 0U || vsupply_mv <= vf_mv) {
+        return 0U;                      /* invalid input */
+    }
+    return (vsupply_mv - vf_mv) / i_ma;
+}
+
+/* Example: 3300 mV supply, red LED Vf = 1800 mV, target 5 mA
+ * (3300 - 1800) / 5 = 300 Ω  ->  select 330 Ω from the E12 series
+ */
+```
+
+## Example: rounded integer division
+
+Integer division truncates. Add half of the divisor to round.
+
+```c
+/* Positive values only. */
+static inline uint32_t div_round_u32(uint32_t num, uint32_t den)
+{
+    return (num + den / 2U) / den;
+}
+
+/* (1500 + 165) / 330 = 5 mA  instead of 4 mA */
+```
+
+## Example: ADC counts to voltage, then to current
+
+Two steps. First scale the ADC result. Then apply `I = V / R`.
+
+```c
+#define ADC_MAX_COUNTS  4095U      /* 12-bit ADC */
+#define ADC_VREF_MV     3300U
+
+/* Step 1: counts -> millivolts */
+uint32_t adc_to_mv(uint16_t counts)
+{
+    /* 4095 * 3300 = 13513500. This exceeds 16 bits.
+     * Use uint32_t for the product to prevent overflow.
+     */
+    return ((uint32_t)counts * ADC_VREF_MV) / ADC_MAX_COUNTS;
+}
+
+/* Step 2: I = V / R across a known load */
+uint32_t load_current_ma(uint16_t counts, uint32_t r_load_ohm)
+{
+    return adc_to_mv(counts) / r_load_ohm;
+}
+```
+
+**Overflow warning.** On an 8-bit or 16-bit target, `int` is 16 bits.
+The product `counts * 3300` overflows. Always cast one operand to `uint32_t`
+before you multiply.
+
+## Example: high-side current sense with a shunt
+
+The shunt is a small, known resistance. Measure the voltage across it.
+Rearranged form: `I = V / R`.
+
+```c
+#define SHUNT_MOHM      100U       /* 0.1 Ω shunt */
+#define AMP_GAIN        50U        /* current-sense amplifier gain */
+
+/* mA = µV / mΩ */
+uint32_t shunt_current_ma(uint32_t adc_mv)
+{
+    uint32_t v_sense_uv = (adc_mv * 1000U) / AMP_GAIN;  /* remove the gain */
+    return v_sense_uv / SHUNT_MOHM;
+}
+
+/* Example: ADC reads 250 mV.
+ * 250000 µV / 50 = 5000 µV across the shunt.
+ * 5000 µV / 100 mΩ = 50 mA
+ */
+```
+
+Check the shunt power rating with `P = I * I * R`:
+
+```c
+/* 50 mA through 0.1 Ω: P = 0.05 * 0.05 * 0.1 = 250 µW. A 0603 part is enough. */
+uint32_t shunt_power_uw(uint32_t i_ma, uint32_t r_mohm)
+{
+    return (i_ma * i_ma * r_mohm) / 1000U;   /* mA * mA * mΩ = nW, /1000 -> µW */
+}
+```
+
+## Example: voltage divider
+
+The divider is Ohm's law applied two times.
+The same current flows through both resistors:
+
+```
+I = Vin / (R1 + R2)          /* I = V / R */
+Vout = I * R2                /* V = I * R */
+Vout = Vin * R2 / (R1 + R2)
+```
+
+```c
+/* Battery monitor: 100k over 100k divides the input by 2. */
+uint32_t battery_mv(uint16_t counts, uint32_t r1_ohm, uint32_t r2_ohm)
+{
+    uint32_t node_mv = adc_to_mv(counts);
+    return (node_mv * (r1_ohm + r2_ohm)) / r2_ohm;
+}
+```
+
+Divide the resistors down to a small ratio before you multiply.
+`node_mv * 200000` overflows a 32-bit variable if `node_mv` is large.
+Use `(1U, 1U)` for a 1:1 divider, or use 64-bit math.
+
+## Example: NTC thermistor resistance
+
+The unknown value is the resistance. Rearranged form: `R = V / I`.
+Circuit: `Vin — R_fixed — node — R_ntc — GND`.
+
+```
+I = (Vin - Vnode) / R_fixed        /* I = V / R  through the fixed resistor */
+R_ntc = Vnode / I                  /* R = V / I  across the NTC */
+R_ntc = R_fixed * Vnode / (Vin - Vnode)
+```
+
+```c
+uint32_t ntc_resistance_ohm(uint32_t vnode_mv, uint32_t vin_mv, uint32_t r_fixed_ohm)
+{
+    if (vnode_mv == 0U || vnode_mv >= vin_mv) {
+        return 0U;                  /* open or short circuit */
+    }
+    return (r_fixed_ohm * vnode_mv) / (vin_mv - vnode_mv);
+}
+```
+
+The resistance to temperature step is a separate calculation.
+Use a lookup table or the Steinhart-Hart equation. Ohm's law stops here.
+
+## Example: pull-up resistor sink current
+
+An open-drain output pulls the line to ground. The pull-up resistor sets the current.
+
+```c
+/* I = V / R.  4700 Ω pull-up on 3300 mV. */
+uint32_t pullup_sink_ma = 3300U / 4700U;       /* = 0 mA -> truncation hides the value */
+uint32_t pullup_sink_ua = (3300U * 1000U) / 4700U;  /* = 702 µA. Better unit. */
+```
+
+Select the unit so that the result is not smaller than 1.
+Otherwise integer truncation gives zero.
+
+## Common errors
+
+| Error | Result | Prevention |
+|---|---|---|
+| Mixed units in one equation | Value is wrong by 1000x | Put the unit in the variable name. |
+| 16-bit product on a small MCU | Overflow, wrapped value | Cast to `uint32_t` before you multiply. |
+| Division before multiplication | Loss of resolution | Multiply first, then divide. |
+| Division by zero | Undefined behavior, hard fault | Test the divisor before each division. |
+| Truncation to zero | Silent zero reading | Use a smaller unit or round. |
+| `float` on a target with no FPU | Slow code, large image | Use scaled integers. |
+| Ohm's law on a non-linear part | Wrong value | An LED, diode or transistor is not a resistor. |
+
+## Recall drill
+
+Write the answers. Then check them below.
+
+1. Give the three forms of Ohm's law.
+2. A 220 Ω resistor has 3300 mV across it. What is the current?
+3. You must limit the current to 20 mA from a 5000 mV supply. What is the resistance?
+4. 12 mA flows through 47 Ω. What is the voltage?
+5. Which C data type do you need for `4095 * 3300`? Why?
+6. Give the three forms of the power equation.
+
+**Answers**
+
+1. `V = I * R`, `I = V / R`, `R = V / I`
+2. `3300 / 220 = 15 mA`
+3. `5000 / 20 = 250 Ω`
+4. `12 * 47 = 564 mV`
+5. `uint32_t`. The product is 13513500. This is larger than the 16-bit maximum of 65535.
+6. `P = V * I`, `P = I * I * R`, `P = V * V / R`
+</details>
