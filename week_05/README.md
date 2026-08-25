@@ -102,10 +102,6 @@
 <details>
 <summary>Ohm's law</summary>
 
-# Ohm's Law in Embedded C — Reference Note
-
-## The three forms
-
 Ohm's law states that the current through a conductor between two points is directly proportional to the potential difference across the two points. 
 
 $I = \frac{V}{R}$
