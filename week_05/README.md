@@ -2,7 +2,7 @@
 
 ## Concepts
 
-- [ ] **Ohm's law.** V = IR. Rearrange to all three forms from memory, no notes.
+- [x] **Ohm's law.** V = IR. Rearrange to all three forms from memory, no notes.
 - [ ] **Series and parallel.** Combine resistances both ways.
   - [ ] Series: sum. Verify on the bench with two resistors and a meter.
   - [ ] Parallel: reciprocal sum. Verify on the bench.
