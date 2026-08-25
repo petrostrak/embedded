@@ -122,7 +122,7 @@ Power comes from Ohm's law and `P = V * I`.
 
 ## Units: the rule that removes floating point
 
-Firmware often has no FPU. Scaled integers are faster and safe.
+Firmware often has no FPU (floating-point unit). Scaled integers are faster and safe.
 Select the units so that the scale factors cancel.
 
 | Identity | Example |
