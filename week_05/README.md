@@ -964,3 +964,429 @@ void test_divider(void)
 }
 ```
 </details>
+
+<details>
+<summary>LED current-limiting resistor and LED forward voltage</summary>
+
+A resistor obeys Ohm's law. Double the voltage and you double the current. An LED does not behave that way.
+
+An LED is a diode. Below a threshold voltage it conducts almost nothing. Above that threshold the current rises exponentially. A change of 0.1 V can multiply the current by ten.
+
+```
+ I
+ |                              /|
+ |                             / |   <-- almost vertical
+ |                            /
+ |                           /
+ |__________________________/
+ +--------------------------------- V
+ 0                        Vf
+```
+
+Two consequences:
+
+1. You cannot set the current by setting the voltage. The slope is too steep to control.
+2. There is nothing inside the LED to stop the current. Connect an LED directly across a supply and the current is limited only by the supply and the wiring. The LED overheats and fails, sometimes in under a second.
+
+So you put a resistor in series. The resistor is the flat, predictable part of the circuit. It sets the current.
+
+```
+        Vsupply
+          |
+         [ ]  R      <-- sets the current
+          |
+          V  LED     <-- drops Vf, whatever the current
+          -
+          |
+         GND
+```
+
+## Forward voltage (Vf)
+
+**Forward voltage is the voltage an LED drops when it is conducting.** It is roughly constant over the normal operating range. It is set mainly by the semiconductor chemistry, which is why it tracks colour.
+
+| Colour | Typical Vf at 20 mA |
+|---|---|
+| Infrared | 1.2 – 1.5 V |
+| Red | 1.8 – 2.2 V |
+| Amber / Yellow | 2.0 – 2.2 V |
+| Green (standard) | 2.0 – 2.2 V |
+| Green (pure / InGaN) | 3.0 – 3.4 V |
+| Blue | 2.8 – 3.4 V |
+| White | 2.8 – 3.4 V |
+
+Four things move Vf. All of them matter in a real design:
+
+- **Current.** Vf rises slowly as current rises. A datasheet quotes Vf at one test current, often 20 mA. At 2 mA the same LED drops noticeably less.
+- **Temperature.** Vf falls about 2 mV per °C of rise. An LED that warms up draws more current, which warms it further.
+- **Part-to-part spread.** Manufacturers bin LEDs. A single part number can span 2.8 V to 3.4 V.
+- **Chemistry.** Never assume a replacement part has the same Vf, even in the same colour.
+
+**Rule:** design with the datasheet minimum and maximum Vf, not the typical value. Then confirm on the bench with a real part.
+
+## Derivation of the resistor formula
+
+Start with two facts.
+
+**Fact 1 — Kirchhoff's voltage law.** Around a series loop, the voltage drops add up to the source voltage.
+
+**Fact 2 — Ohm's law.** `V = I × R`.
+
+### Step 1: Write the loop
+
+The supply drives a resistor and an LED in series.
+
+```
+Vsupply = V_R + Vf
+```
+
+### Step 2: Find the voltage across the resistor
+
+The LED takes Vf. Whatever is left is across the resistor. Rearrange:
+
+```
+V_R = Vsupply − Vf
+```
+
+This leftover voltage is called the **headroom**. Remember the name; section 6 depends on it.
+
+### Step 3: The current is the same in both parts
+
+The resistor and the LED are in series. There is one path. The current through the resistor is the current through the LED. Call it `If`.
+
+### Step 4: Apply Ohm's law to the resistor
+
+```
+V_R = If × R
+```
+
+### Step 5: Substitute step 2 into step 4
+
+```
+Vsupply − Vf = If × R
+```
+
+### Step 6: Solve for R
+
+Divide both sides by `If`:
+
+```
+        Vsupply − Vf
+R  =  ----------------
+             If
+```
+
+**That is the design formula.** Only the resistor is involved in the maths. The LED contributes one number, Vf.
+
+### Step 7: Invert it for verification
+
+You will not get the exact resistor you calculated. Standard values come in fixed steps. So rearrange to find the current you will actually get from the part you can actually buy:
+
+```
+        Vsupply − Vf
+If  =  ----------------
+              R
+```
+
+### Worked example
+
+Supply 3.3 V, red LED with Vf = 1.9 V, target current 5 mA.
+
+- Headroom: `3.3 − 1.9 = 1.4 V`
+- Ideal resistor: `1.4 / 0.005 = 280 Ω`
+- Nearest standard value **above** 280 Ω in the E12 series: 330 Ω
+- Actual current: `1.4 / 330 = 4.24 mA`
+
+**Always round the resistor up.** A larger resistor gives less current. Less current is safe. More current is not.
+
+## Power dissipation
+
+Check both parts. A 0402 resistor is typically rated for 62.5 mW, a 0603 for 100 mW.
+
+**In the resistor:**
+
+```
+P_R = If² × R          (or equivalently  P_R = (Vsupply − Vf) × If)
+```
+
+For the example above: `0.00424² × 330 = 5.9 mW`. Any package is fine.
+
+**In the LED:**
+
+```
+P_LED = Vf × If
+```
+
+For the example: `1.9 × 0.00424 = 8.1 mW`.
+
+**Efficiency.** The resistor burns the headroom as heat. The wasted fraction is `(Vsupply − Vf) / Vsupply`, which here is 42 %. At 5 mA nobody cares. At 350 mA that is 490 mW of heat, and you must use a constant-current driver instead of a resistor.
+
+## Microcontroller pin limits
+
+Three separate limits apply, and all three must hold.
+
+1. **Per-pin current.** Typically 8 mA to 20 mA. Check the absolute maximum, then design well below it.
+2. **Total port or package current.** Often around 100 mA for the whole device. Eight LEDs at 20 mA already breaks it.
+3. **Output voltage drop.** A GPIO is not an ideal switch. It has internal resistance. The datasheet gives VOH (high output) and VOL (low output) at a stated current.
+
+### Correct the supply for the pin drop
+
+If the datasheet says VOL = 0.4 V at 8 mA, then a low-side driven LED does not see 3.3 V. It sees:
+
+```
+V_effective = 3.3 − 0.4 = 2.9 V
+```
+
+Use 2.9 V in the resistor formula, not 3.3 V. Skip this and your current will be lower than you designed for, and the LED will look dim.
+
+### Sink or source
+
+```
+   SOURCE (active high)          SINK (active low)
+                                        VDD
+       GPIO                              |
+        |                               [ ] R
+       [ ] R                             |
+        |                                V  LED
+        V  LED                           -
+        -                                |
+        |                              GPIO
+       GND
+```
+
+Many microcontrollers sink more current than they source. Sinking is often the stronger and cleaner option. It also means the LED is **on when the pin is low**. Wrap that inversion in a macro so it appears exactly once in your code:
+
+```c
+/* LED anode to VDD through R, cathode to the GPIO: on = pin low. */
+#define LED_ON()    gpio_write(LED_PORT, LED_PIN, 0)
+#define LED_OFF()   gpio_write(LED_PORT, LED_PIN, 1)
+```
+
+Set the pin to its off state **before** you configure it as an output. Otherwise the LED flashes during boot.
+
+## How much headroom you need
+
+This is where most LED designs go wrong.
+
+Take the current formula and ask how much the current moves when Vf moves:
+
+```
+If = (Vsupply − Vf) / R
+```
+
+A change in Vf of `ΔVf` changes the numerator by the same amount. So the fractional change in current is:
+
+```
+ΔIf / If  =  ΔVf / (Vsupply − Vf)
+```
+
+The error in your current is the Vf spread **divided by the headroom**. Small headroom means large error.
+
+### Compare two cases
+
+**Red LED on 3.3 V.** Vf spread 1.8 – 2.0 V, so ΔVf = 0.2 V. Headroom ≈ 1.4 V.
+
+```
+0.2 / 1.4 = 14 % current spread.
+```
+
+Acceptable.
+
+**Blue LED on 3.3 V.** Vf spread 2.8 – 3.4 V, so ΔVf = 0.6 V. Headroom at typical Vf ≈ 0.3 V.
+
+```
+0.6 / 0.3 = 200 % current spread.
+```
+
+Worse: an LED binned at 3.4 V has **negative** headroom on a 3.3 V rail that has sagged to 3.2 V. It will not light at all. Some boards will work and some will not, and the failures will look random.
+
+**Rule of thumb: keep the headroom at or above 20 % of the supply, and above 0.5 V in absolute terms.** If you cannot, raise the supply (drive blue and white LEDs from 5 V), or use a constant-current sink.
+
+## Multiple LEDs
+
+### Series — good
+
+Stack the forward voltages and use one resistor.
+
+```
+R = (Vsupply − Vf1 − Vf2 − ...) / If
+```
+
+Two red LEDs at 1.9 V need 3.8 V. On a 3.3 V rail they will not light. Check the sum against the supply, with headroom, before you commit.
+
+### Parallel with one shared resistor — never do this
+
+Two LEDs in parallel do not share the current evenly. The one with the lower Vf takes most of it. It gets hot, its Vf falls further, and it takes even more. This runs away. Brightness is mismatched and lifetime is short.
+
+**Give every parallel LED its own resistor.** The cost of a resistor is far below the cost of a field failure.
+
+### RGB LEDs
+
+Each die is a different colour with a different Vf. Red might be 2.0 V while green and blue are 3.2 V. **Use three different resistor values**, calculated separately. Then trim them for white balance, because the three dies also differ in light output per milliamp.
+
+## Firmware: encode the design in the code
+
+Put the hardware numbers in the source. Let the compiler check them. Work in millivolts and microamps so everything stays in integers.
+
+```c
+#include <stdint.h>
+#include <assert.h>
+
+/* ---- Board constants ------------------------------------------------ */
+#define VSUPPLY_MV        3300u
+#define GPIO_VOL_MV        400u    /* pin drop when sinking, from datasheet */
+#define VEFF_MV           (VSUPPLY_MV - GPIO_VOL_MV)
+
+/* ---- Per-LED design ------------------------------------------------- */
+#define LED_STATUS_VF_MV  1900u    /* red, datasheet typical */
+#define LED_STATUS_R_OHM   330u    /* fitted part */
+
+/* Actual current, in microamps.
+ * mV / uA gives ohms, so mV * 1000 / ohms gives uA. */
+#define LED_CURRENT_UA(vf_mv, r_ohm) \
+    (((VEFF_MV - (vf_mv)) * 1000u) / (r_ohm))
+
+#define LED_STATUS_IF_UA  LED_CURRENT_UA(LED_STATUS_VF_MV, LED_STATUS_R_OHM)
+
+/* ---- Design rules, checked at compile time -------------------------- */
+#define GPIO_MAX_UA       8000u
+#define LED_MIN_VISIBLE_UA 1000u
+
+_Static_assert(VEFF_MV > LED_STATUS_VF_MV,
+               "No headroom: the LED will not light.");
+_Static_assert(LED_STATUS_IF_UA <= GPIO_MAX_UA,
+               "LED current exceeds the GPIO rating.");
+_Static_assert(LED_STATUS_IF_UA >= LED_MIN_VISIBLE_UA,
+               "LED current too low to see.");
+```
+
+Change the resistor in the schematic, change one number here, and the build tells you immediately if the design broke. No maths at runtime and no flash cost.
+
+Add a budget check across the whole board:
+
+```c
+#define LED_TOTAL_UA  (LED_STATUS_IF_UA + LED_ERROR_IF_UA + LED_LINK_IF_UA)
+
+_Static_assert(LED_TOTAL_UA <= 100000u,
+               "Total LED current exceeds the package limit.");
+```
+
+## Brightness control with PWM
+
+You cannot dim an LED usefully by changing the resistor at runtime, and lowering the current changes the colour of white and green LEDs. Switch it on and off fast instead. The eye averages the result.
+
+Three rules:
+
+- Keep the PWM frequency at 400 Hz or above. 100 Hz flickers visibly at the edge of vision and beats badly against camera shutters.
+- The current during the on-time is still the full `If`. PWM changes the average, not the peak. Your resistor calculation does not change.
+- Perceived brightness is not proportional to duty cycle.
+
+### Gamma correction
+
+The eye responds roughly logarithmically. A linear duty ramp looks wrong: it jumps at the bottom and then appears to stop changing. Apply a power curve.
+
+A cheap approximation, accurate enough for indicators:
+
+```c
+/* Square law (gamma 2.0). Input 0..255, output 0..255. */
+static inline uint8_t gamma_u8(uint8_t level)
+{
+    return (uint8_t)(((uint16_t)level * level) / 255u);
+}
+```
+
+For a smooth fade on a 12-bit PWM timer, use a table with interpolation. Generate the table offline and store it in flash:
+
+```c
+/* 17 points of a gamma 2.2 curve, 8-bit input mapped to 12-bit duty. */
+static const uint16_t gamma_lut[17] = {
+       0,    1,    5,   14,   30,   55,   90,  137,
+     197,  272,  363,  471,  598,  745,  913, 1103,
+    4095
+};
+
+uint16_t gamma_to_duty(uint8_t level)
+{
+    uint8_t  idx  = (uint8_t)(level >> 4);        /* 0..15 */
+    uint8_t  frac = (uint8_t)(level & 0x0Fu);     /* 0..15 */
+    uint16_t lo   = gamma_lut[idx];
+    uint16_t hi   = gamma_lut[idx + 1u];
+
+    return (uint16_t)(lo + (((uint32_t)(hi - lo) * frac) >> 4));
+}
+```
+
+### A non-blocking fade
+
+Never use a delay loop to fade an LED. Drive it from a periodic tick.
+
+```c
+typedef struct {
+    uint8_t  current;
+    uint8_t  target;
+    uint8_t  step;
+} led_fade_t;
+
+/* Call this at a fixed rate, for example every 10 ms. */
+void led_fade_tick(led_fade_t *f)
+{
+    if (f->current < f->target) {
+        uint8_t room = (uint8_t)(f->target - f->current);
+        f->current = (uint8_t)(f->current + ((room < f->step) ? room : f->step));
+    } else if (f->current > f->target) {
+        uint8_t room = (uint8_t)(f->current - f->target);
+        f->current = (uint8_t)(f->current - ((room < f->step) ? room : f->step));
+    } else {
+        return;                                   /* already there */
+    }
+
+    pwm_set_duty(LED_PWM_CHANNEL, gamma_to_duty(f->current));
+}
+```
+
+## Multiplexed displays
+
+In a scanned matrix or a 7-segment display, each LED is on for only a fraction of the frame. To keep the same apparent brightness you raise the peak current.
+
+```
+If_peak = If_average × N            (N = number of scanned rows)
+```
+
+Two hard limits apply:
+
+- The LED datasheet gives a **peak pulse current** rating, valid only up to a maximum pulse width and duty cycle. Stay inside both.
+- The GPIO or driver must carry the peak, not the average.
+
+Guard the duty cycle in code, because a firmware bug that stops the scan leaves one row on at peak current permanently. That destroys the LEDs in seconds.
+
+```c
+#define MUX_ROWS            8u
+#define MUX_FRAME_HZ      200u                     /* 200 Hz, no flicker */
+#define MUX_ROW_US        (1000000u / (MUX_FRAME_HZ * MUX_ROWS))
+
+/* Watchdog on the scanner: if the row timer stops, blank everything. */
+void mux_isr(void)
+{
+    static uint8_t row = 0u;
+
+    mux_all_rows_off();          /* blank first, then switch: no ghosting */
+    mux_set_columns(frame_buffer[row]);
+    mux_row_on(row);
+
+    row = (uint8_t)((row + 1u) % MUX_ROWS);
+    mux_watchdog_feed();
+}
+```
+
+## Common mistakes
+
+- **No resistor at all**, relying on the GPIO output resistance. The value is undefined, varies with temperature and part, and is not a specified limit.
+- **Using the datasheet typical Vf only.** Design across the full bin range.
+- **Driving blue or white LEDs from 3.3 V.** Not enough headroom. See section 6.
+- **One resistor for parallel LEDs.** Uneven current and thermal runaway.
+- **Ignoring the GPIO voltage drop.** Your real current is lower than calculated.
+- **Forgetting the total package current limit** after checking each pin individually.
+- **Reverse voltage.** LEDs typically survive only about 5 V in reverse. Charlieplexing and matrix schemes must respect this.
+- **Configuring the GPIO before setting its level.** Causes a flash at reset.
+- **Assuming a dimmer LED draws less peak current under PWM.** It does not.
+</details>
