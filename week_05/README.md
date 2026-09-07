@@ -1774,3 +1774,374 @@ Run this once at boot as a production self-test. It catches a missing resistor, 
 - **Enabling an interrupt on a pin before configuring its pull.** The floating pin generates an interrupt storm immediately.
 - **Leaving unused pins as input floating.** They burn current in the input buffer. Configure them as analog, or as input with a pull.  
 </details>
+
+<details>
+<summary>Pull-up vs pull-down</summary>
+
+A GPIO output is two transistors inside the chip, arranged between the supply rails, with the pin in the middle.
+
+```
+        VDD
+         |
+       |--o  P-channel MOSFET   (pulls the pin UP)
+       |
+         +-------> pin
+       |
+       |--   N-channel MOSFET   (pulls the pin DOWN)
+         |
+        GND
+```
+
+The difference between push-pull and open-drain is simply **which of those two transistors the chip actually gives you**.
+
+## Push-pull
+
+Both transistors are present. Exactly one is on at any moment.
+
+```
+   Output HIGH               Output LOW
+        VDD                      VDD
+         |                        |
+       [ON]  P                  [OFF] P
+         |                        |
+         +---> pin  (at VDD)      +---> pin  (at GND)
+         |                        |
+       [OFF] N                  [ON]  N
+         |                        |
+        GND                      GND
+```
+
+- **High:** the P-channel device is on. It connects the pin to VDD through a low resistance, typically 20 Ω to 60 Ω. The pin **sources** current.
+- **Low:** the N-channel device is on. It connects the pin to ground through a similar low resistance. The pin **sinks** current.
+
+Both edges are fast and driven by the silicon. The pin is never left alone while it is configured as a push-pull output.
+
+## Open-drain
+
+The P-channel device is not connected. Only the low-side N-channel device exists. Its drain is the pin — hence the name.
+
+```
+   Output LOW                Output "HIGH"
+                              (nothing inside drives it)
+         |                        |
+      (no P device)            (no P device)
+         |                        |
+         +---> pin  (at GND)      +---> pin  (floating)
+         |                        |
+       [ON]  N                  [OFF] N
+         |                        |
+        GND                      GND
+```
+
+- **Low:** the N-channel device is on. The pin is pulled to ground, exactly as in push-pull. This half is identical.
+- **"High":** the N-channel device is off. There is now **no path from the pin to any rail inside the chip**. The pin is high impedance. The chip has stopped participating.
+
+So an open-drain output has two states, and only one of them is a driven logic level. The correct words for the second state are **released** or **not driving** — not "high".
+
+An open-drain pin needs an external pull-up resistor to turn "released" into a usable logic high. Without one, the released state is a floating pin, with all the problems that brings.
+
+## What each stage can and cannot drive
+
+| Action | Push-pull | Open-drain |
+|---|---|---|
+| **Drive high** (source current, actively hold at VDD) | **Yes.** P-channel device on, low impedance, fast rising edge. | **No. Never.** There is no high-side transistor. The chip cannot put current into the pin. |
+| **Drive low** (sink current, actively hold at GND) | **Yes.** N-channel device on, low impedance, fast falling edge. | **Yes.** Identical to push-pull. This is the stage's only driven state. |
+| **Not drive** (release the pin, high impedance) | **No**, not while configured as an output. One transistor is always on. The pin is only high impedance if you change its mode to input or analog. | **Yes.** This is its second state, and it is normal and intentional. |
+
+Two consequences follow directly from that table.
+
+**Consequence 1 — the high level of an open-drain line comes from outside the chip.** With a pull-up fitted, the fall is driven by a transistor and is fast, while the rise is an RC charge through the resistor and is comparatively slow. The two edges are not symmetrical. That asymmetry is why open-drain is unsuitable for fast signals such as SPI clocks.
+
+**Consequence 2 — several open-drain outputs can share one wire safely.** Any device can pull the line low. The line is high only when **every** device has released it. This is a wired-AND. No two devices can ever fight, because none of them can drive high.
+
+Try that with push-pull and you get a short circuit. If one pin drives high and another drives low, the P-channel device of the first sits in series with the N-channel device of the second, both fully on:
+
+```
+I = VDD / (Rp_on + Rn_on) = 3.3 / (30 + 30) = 55 mA
+```
+
+That exceeds the per-pin absolute maximum. It damages both pins.
+
+**Rule: any wire with more than one possible driver must be open-drain.**
+
+## Why I²C needs pull-ups
+
+The one-sentence answer, following from section 4:
+
+> **I²C pins are open-drain, and an open-drain output can only ever pull the line low or release it — it can never drive high — so an external pull-up resistor is the only thing on the bus that produces the logic high level.**
+
+Everything else about the bus is built on that choice.
+
+- **Two wires, many devices.** One master and every slave share SDA and SCL. Open-drain is what makes a shared wire safe (section 4, consequence 2).
+- **The acknowledge bit.** The master releases SDA and the slave pulls it low to say "received". Two different chips take turns driving the same wire in the same byte. Only possible if neither can drive high.
+- **Clock stretching.** A slave that needs time holds SCL low after the master has released it. The master reads the pin back, sees it is still low, and waits. The master's own output stage does not fight it.
+- **Multi-master arbitration.** Two masters transmit at once. One sends a 1 (releases), the other a 0 (pulls low). The line goes low. The master that sent the 1 reads the line back, sees a 0, knows it lost, and stops. No damage, no corruption. The wired-AND resolves it automatically.
+
+Note the pattern in the last three points: an open-drain driver must be able to **read back** what the line is actually doing, not what it commanded. On the STM32F3 the input buffer stays connected in open-drain output mode, so `GPIOx->IDR` always reports the real line state.
+
+## Sizing the I²C pull-up
+
+Two limits bracket the value. Both come from Ohm's law and an RC.
+
+### Minimum resistance — the VOL requirement
+
+The I²C specification requires a device to hold the line at or below 0.4 V while sinking no more than 3 mA. The pull-up sets that current, since the whole supply appears across it when the line is pulled down:
+
+```
+R_min = (VDD − VOL) / I_OL = (3.3 − 0.4) / 0.003 = 967 Ω
+```
+
+So roughly 1 kΩ is the floor. Below that, the sinking device cannot hold the line low enough to be read as a valid zero.
+
+### Maximum resistance — the rise time requirement
+
+The rise is the resistor charging the bus capacitance. The specification measures rise time between 30 % and 70 % of VDD, which gives:
+
+```
+t_r = R × C × ln(0.7 / 0.3) = 0.847 × R × C
+```
+
+Rearranged:
+
+```
+R_max = t_r / (0.847 × C)
+```
+
+The allowed `t_r` is 1000 ns in standard mode (100 kHz) and 300 ns in fast mode (400 kHz). The specification caps total bus capacitance at 400 pF.
+
+| Mode | t_r max | Bus C | R_max |
+|---|---|---|---|
+| Standard 100 kHz | 1000 ns | 100 pF | 11.8 kΩ |
+| Standard 100 kHz | 1000 ns | 400 pF | 2.95 kΩ |
+| Fast 400 kHz | 300 ns | 100 pF | 3.5 kΩ |
+| Fast 400 kHz | 300 ns | 200 pF | 1.8 kΩ |
+
+### Practical values
+
+- **4.7 kΩ** — standard mode, short traces, few devices. The usual default.
+- **2.2 kΩ** — fast mode, or a longer bus.
+- **1 kΩ** — fast mode with a heavily loaded bus. Check VOL margin.
+
+Current cost while a line is held low: `3.3 / 4700 = 702 µA` per line. With both SDA and SCL low that is 1.4 mA. On a battery product, keep the bus idle and it costs nothing, because an idle bus is high and no current flows.
+
+### Fit them once per bus
+
+This is the most common I²C fault on a breadboard. Sensor breakout boards usually carry their own 4.7 kΩ pull-ups. Plug in three of them and you have three resistors in parallel:
+
+```
+4700 / 3 = 1567 Ω
+```
+
+Current rises to 2.1 mA per line, and the VOL margin shrinks. Add two more boards and the bus stops working. **Remove the on-board pull-ups from all but one module, or from all of them and fit a single pair on the bus.**
+
+## Choosing the stage on the STM32F3
+
+One register bit per pin, in `GPIOx_OTYPER`:
+
+| OTYPER bit | Output type |
+|---|---|
+| `0` | Push-pull (reset value) |
+| `1` | Open-drain |
+
+It applies in both plain output mode and alternate-function mode. So the I²C peripheral still needs you to set open-drain by hand — selecting the peripheral does not do it for you.
+
+### I²C pins: alternate function, open-drain, no internal pull
+
+```c
+#include <stdint.h>
+#include "stm32f3xx.h"
+
+/* I2C1 on PB6 = SCL, PB7 = SDA (AF4 on the STM32F3). */
+#define I2C_SCL_PIN   6u
+#define I2C_SDA_PIN   7u
+
+static void gpio_set_af_open_drain(GPIO_TypeDef *port, uint8_t pin, uint8_t af)
+{
+    /* Alternate function mode: MODER = 10. */
+    port->MODER &= ~(3u << (pin * 2u));
+    port->MODER |=  (2u << (pin * 2u));
+
+    /* Open-drain: OTYPER bit = 1. Required for I2C. */
+    port->OTYPER |= (1u << pin);
+
+    /* No internal pull. External resistors do this job; the internal
+     * ~40 k is far too weak to meet the I2C rise-time limit. */
+    port->PUPDR &= ~(3u << (pin * 2u));
+
+    /* High speed slew rate: OSPEEDR = 11. */
+    port->OSPEEDR |= (3u << (pin * 2u));
+
+    /* Alternate function select: AFR[0] for pins 0-7, AFR[1] for 8-15. */
+    if (pin < 8u) {
+        port->AFR[0] &= ~(0xFu << (pin * 4u));
+        port->AFR[0] |=  ((uint32_t)af << (pin * 4u));
+    } else {
+        port->AFR[1] &= ~(0xFu << ((pin - 8u) * 4u));
+        port->AFR[1] |=  ((uint32_t)af << ((pin - 8u) * 4u));
+    }
+}
+
+void i2c1_pins_init(void)
+{
+    RCC->AHBENR |= RCC_AHBENR_GPIOBEN;
+
+    gpio_set_af_open_drain(GPIOB, I2C_SCL_PIN, 4u);
+    gpio_set_af_open_drain(GPIOB, I2C_SDA_PIN, 4u);
+}
+```
+
+### An LED: alternate function not needed, push-pull
+
+```c
+void led_pin_init(GPIO_TypeDef *port, uint8_t pin)
+{
+    /* Output mode: MODER = 01. */
+    port->MODER &= ~(3u << (pin * 2u));
+    port->MODER |=  (1u << (pin * 2u));
+
+    /* Push-pull: OTYPER bit = 0. The pin must source current into the LED,
+     * which an open-drain stage cannot do. */
+    port->OTYPER &= ~(1u << pin);
+
+    port->PUPDR &= ~(3u << (pin * 2u));
+}
+```
+
+## Bit-banged I²C: the two states in code
+
+This makes the difference concrete. With an open-drain pin, writing a 1 to the output register turns the transistor **off**, which releases the line. It does not drive high.
+
+```c
+#define SDA_PORT   GPIOB
+#define SDA_PIN    7u
+
+/* BSRR: low half sets a bit, high half resets it. Atomic, no read-modify-write. */
+#define SDA_DRIVE_LOW()   (SDA_PORT->BSRR = (1u << (SDA_PIN + 16u)))
+#define SDA_RELEASE()     (SDA_PORT->BSRR = (1u << SDA_PIN))
+#define SDA_READ()        ((SDA_PORT->IDR >> SDA_PIN) & 1u)
+
+#define SCL_DRIVE_LOW()   (SCL_PORT->BSRR = (1u << (SCL_PIN + 16u)))
+#define SCL_RELEASE()     (SCL_PORT->BSRR = (1u << SCL_PIN))
+#define SCL_READ()        ((SCL_PORT->IDR >> SCL_PIN) & 1u)
+```
+
+Naming the macros `DRIVE_LOW` and `RELEASE` instead of `LOW` and `HIGH` keeps the hardware honest in the source. `SDA_HIGH()` would be a lie.
+
+### Sending one bit
+
+```c
+static void i2c_write_bit(uint8_t bit)
+{
+    if (bit != 0u) {
+        SDA_RELEASE();        /* pull-up takes the line high */
+    } else {
+        SDA_DRIVE_LOW();
+    }
+    delay_us(2);              /* allow the RC rise to finish */
+
+    SCL_RELEASE();
+    delay_us(2);
+    SCL_DRIVE_LOW();
+}
+```
+
+Note the delay after releasing SDA. A driven edge needs no settling time. A released edge is an RC and does.
+
+### Waiting out clock stretching
+
+The master releases SCL, then checks whether the line actually went high. If a slave is holding it down, the master waits. This only works because the pin can be read back.
+
+```c
+/* Returns 0 on success, 1 on timeout. */
+static uint8_t scl_release_and_wait(void)
+{
+    uint32_t guard = 10000u;
+
+    SCL_RELEASE();
+
+    while (SCL_READ() == 0u) {      /* a slave is stretching the clock */
+        if (--guard == 0u) {
+            return 1u;              /* stuck low: bus fault */
+        }
+    }
+    delay_us(2);
+    return 0u;
+}
+```
+
+Always fit the timeout. A slave that crashed while holding SCL low will otherwise hang the master forever.
+
+### Reading the ACK
+
+```c
+/* Returns 1 if the slave acknowledged. */
+static uint8_t i2c_read_ack(void)
+{
+    uint8_t ack;
+
+    SDA_RELEASE();                  /* hand the line over to the slave */
+    delay_us(2);
+
+    if (scl_release_and_wait() != 0u) {
+        return 0u;
+    }
+
+    ack = (uint8_t)(SDA_READ() == 0u);   /* slave pulls low to acknowledge */
+
+    SCL_DRIVE_LOW();
+    return ack;
+}
+```
+
+### Recovering a stuck bus
+
+If a slave was reset mid-transfer it may be holding SDA low. Clocking SCL nine times lets it finish the byte it thinks it is sending and then release.
+
+```c
+void i2c_bus_recover(void)
+{
+    SDA_RELEASE();
+
+    for (uint8_t i = 0u; i < 9u; i++) {
+        SCL_RELEASE();
+        delay_us(5);
+        if (SDA_READ() != 0u) {
+            break;                  /* line freed */
+        }
+        SCL_DRIVE_LOW();
+        delay_us(5);
+    }
+    SCL_RELEASE();
+}
+```
+
+## Other places open-drain is the right answer
+
+**Shared interrupt line.** Four sensors, one MCU pin, one pull-up. Any sensor pulls the line low to signal. This is why interrupt outputs are almost always active low and open-drain. The MCU polls each device's status register to find out which one asserted.
+
+**Reset lines.** `/RESET` is open-drain so that the MCU, a supervisor chip, a watchdog, and a debug header can all assert it without any of them fighting.
+
+**Driving to a different voltage.** An open-drain pin has no internal path to VDD, so its pull-up can go to a different rail. A 3.3 V pin with a pull-up to 5 V will swing 0 V to 5 V — provided the pin is rated to tolerate 5 V when released. Check the datasheet for 5 V tolerance before doing this; a non-tolerant pin will be damaged by its own pull-up.
+
+For mixed-voltage I²C, pull both sides up to the **lower** rail and confirm that the higher-voltage device accepts it as a logic high. Many 5 V parts specify VIH as 0.7 × VDD = 3.5 V, which 3.3 V does not meet. When that happens, fit a proper level translator rather than hoping.
+
+## Where open-drain is the wrong answer
+
+- **Fast signals.** SPI clocks, high-rate UART, any clock output. The RC rise limits the frequency and skews the duty cycle.
+- **Sourcing current.** An LED wired from the pin to ground will never light. A push-pull pin is required, or wire the LED from VDD through its resistor to the pin and drive it active low.
+- **Anything needing symmetric edges**, such as a PWM output feeding a filter.
+
+Use push-pull for everything single-driver and reasonably fast. That is also the reset default, which is convenient.
+
+
+## Common mistakes
+
+- **Open-drain with no pull-up anywhere.** The released state floats. The signal reads as garbage and the input buffer burns current.
+- **Configuring I²C pins as push-pull.** It appears to work with one slave on a bench. Then a slave tries to acknowledge or stretch the clock, both chips drive the wire at once, and you get a 55 mA short across two pins.
+- **Stacking pull-ups.** Three breakout boards, three pairs of resistors, one third of the intended resistance.
+- **Pull-up too weak for the mode.** 10 kΩ on a 400 kHz bus with 200 pF of capacitance gives a rise time of about 1.7 µs against a 300 ns limit. Reads are intermittent and worse when you attach a scope probe.
+- **Using an internal pull-up for I²C.** About 40 kΩ. Roughly four times too weak even for standard mode on a short bus.
+- **Calling the released state "high" in the code.** It leads people to expect a driven level and to omit the settling delay.
+- **No timeout on a clock-stretch wait loop.** One crashed slave hangs the whole product.
+- **Forgetting that OTYPER still applies in alternate-function mode.** Selecting the I²C peripheral does not set open-drain for you.
+</details>
