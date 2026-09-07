@@ -8,7 +8,6 @@
   - [x] Parallel: reciprocal sum. Verify on the bench.
   - [x] Write down which one always gives a result smaller than the smallest resistor, and why.
 - [ ] **Voltage divider.** Derive the output formula from Ohm's law yourself; do not copy it.
-- [ ] **Divider under load.** A load resistance sits in parallel with the bottom leg. Write down what that does to the output before you measure it.
 - [ ] **LED current-limiting resistor.** Calculate the value from supply, forward voltage, and target current. Calculate, don't copy.
 - [ ] **LED forward voltage.** Not a resistance. Find the forward voltage of the LED you are actually using.
 - [ ] **Pull-up vs pull-down.**
