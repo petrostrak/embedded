@@ -1776,7 +1776,7 @@ Run this once at boot as a production self-test. It catches a missing resistor, 
 </details>
 
 <details>
-<summary>Pull-up vs pull-down</summary>
+<summary>Push-pull vs open-drain</summary>
 
 A GPIO output is two transistors inside the chip, arranged between the supply rails, with the pin in the middle.
 
