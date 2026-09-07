@@ -1389,3 +1389,388 @@ void mux_isr(void)
 - **Configuring the GPIO before setting its level.** Causes a flash at reset.
 - **Assuming a dimmer LED draws less peak current under PWM.** It does not.
 </details>
+
+<details>
+<summary>Pull-up vs pull-down</summary>
+
+# Pull-Up vs Pull-Down — Reference for Embedded C (STM32F3)
+
+## The problem a pull resistor solves
+
+A digital input must be at one of two levels: near VDD, or near ground. A mechanical switch cannot give you both.
+
+A switch has exactly two states:
+
+- **Open** — an open circuit. It connects the pin to nothing.
+- **Closed** — a short circuit. It connects the pin to one rail.
+
+So a switch on its own can only ever drive **one** of the two levels. The other state leaves the pin unconnected. That is not a logic level at all.
+
+The pull resistor supplies the missing level. It weakly holds the pin at the resting level, and the switch overrides it.
+
+## Why a floating input reads garbage
+
+A CMOS input pin is a **very** high impedance node. The input is the gate of a pair of MOSFETs. Gates draw almost no current — leakage is on the order of a microamp or less. Nothing inside the chip pulls the pin anywhere.
+
+Four things then happen to an unconnected pin.
+
+**1. There is no defined voltage.** Ohm's law says `V = I × R`. With no connection there is no resistance to any rail and no current path, so there is no voltage to calculate. The pin voltage is simply undetermined. It is not 0 V and it is not VDD.
+
+**2. The pin acts as a small capacitor and holds charge.** The pin, the bond wire, the pad and the PCB trace together form a few picofarads to ground. Whatever charge is on that capacitance stays there, because nothing is discharging it. The pin remembers the last voltage it happened to be at, for milliseconds or longer.
+
+**3. It behaves as an antenna.** Every trace on the board is capacitively coupled to its neighbours. A few picofarads of coupling is enough to inject charge into a node that has no discharge path. Sources include mains hum at 50 Hz, a clock line on an adjacent trace, a switching regulator, a nearby motor, and your finger. The pin voltage drifts and wanders with all of it.
+
+**4. It parks near the switching threshold, which is the dangerous part.** The input buffer has a P-channel and an N-channel transistor in series. At a valid high, only one conducts. At a valid low, only the other conducts. At a mid-rail voltage **both conduct at once**, and current flows straight from VDD to ground through the buffer. Consequences:
+
+- Extra supply current, tens or hundreds of microamps per pin. This wrecks a low-power design.
+- The buffer output oscillates as the drifting input crosses the threshold repeatedly, sometimes at megahertz.
+- If the pin has an interrupt enabled, that oscillation becomes an interrupt storm. The CPU does nothing else.
+
+The result in firmware: `gpio_read()` returns values that look plausible, change when you touch the board, differ between two identical boards, and behave differently with the debugger attached. It is the classic hardware fault that presents as a firmware bug.
+
+**Rule: no input pin may ever float.** Every input has a pull, a driver, or is configured as analog. Unused pins included.
+
+## The two topologies
+
+### Pull-up: resistor to VDD, switch to ground
+
+```
+        VDD
+         |
+        [ ]  R  (10 kΩ)
+         |
+         +-------> to MCU input pin
+         |
+        / (switch)
+         |
+        GND
+```
+
+### Pull-down: resistor to ground, switch to VDD
+
+```
+        VDD
+         |
+        / (switch)
+         |
+         +-------> to MCU input pin
+         |
+        [ ]  R  (10 kΩ)
+         |
+        GND
+```
+
+## Resting and pressed levels
+
+Work it out from Ohm's law. Treat the switch as a resistance: near 0 Ω when closed, effectively infinite when open. The circuit is then a voltage divider where one leg changes value.
+
+### Pull-up, switch open (resting)
+
+The switch is an open circuit, so no current flows in the loop. Ohm's law gives the drop across the resistor:
+
+```
+V_R = I × R = 0 × 10000 = 0 V
+```
+
+Zero drop. The pin sits at whatever the top of the resistor sits at, which is VDD.
+
+**Resting level = HIGH (logic 1).**
+
+### Pull-up, switch closed (pressed)
+
+The switch shorts the pin to ground. The pin is now connected directly to 0 V through near-zero resistance. The full supply appears across the resistor:
+
+```
+I = VDD / R = 3.3 / 10000 = 330 µA
+```
+
+**Pressed level = LOW (logic 0).**
+
+### Pull-down, switch open (resting)
+
+Same argument, mirrored. No current, so no drop across the resistor, so the pin sits at the bottom of the resistor: ground.
+
+**Resting level = LOW (logic 0).**
+
+### Pull-down, switch closed (pressed)
+
+The switch connects the pin to VDD. The pin reads VDD, and 330 µA flows down through the resistor.
+
+**Pressed level = HIGH (logic 1).**
+
+### Summary table
+
+| | Resistor goes to | Switch goes to | Resting (not pressed) | Pressed | Firmware polarity |
+|---|---|---|---|---|---|
+| **Pull-up** | VDD | GND | **HIGH (1)** | **LOW (0)** | active low |
+| **Pull-down** | GND | VDD | **LOW (0)** | **HIGH (1)** | active high |
+
+The pull resistor **always** sets the resting level, and the switch **always** produces the opposite level. Note that the current flows only while the button is held. A resting pull resistor costs nothing.
+
+### Which to choose
+
+A pull-up with the switch to ground is the normal choice.
+
+- The switch side is connected to ground, and ground is available everywhere on a board. Wiring is simpler and shorter.
+- The switch wire carries ground, not VDD. If it shorts to a chassis or a neighbouring ground trace, nothing bad happens.
+- Microcontroller pins generally sink current better than they source it, and the same asymmetry applies through the whole logic family.
+- I²C, one-wire, and every open-drain bus requires a pull-up by definition. The convention is consistent.
+
+Use a pull-down only when you specifically need the resting state to be a logic zero — for example when the pin also feeds something that must see 0 V while the MCU is unpowered.
+
+## Choosing the resistor value
+
+Three constraints pull in opposite directions. 10 kΩ satisfies all of them for a button, which is why it is the default.
+
+**Lower bound — current when pressed.**
+
+```
+I = VDD / R
+```
+
+At 3.3 V: 1 kΩ draws 3.3 mA, 10 kΩ draws 330 µA, 100 kΩ draws 33 µA. On a battery product with a button that a user might hold, this matters.
+
+**Upper bound 1 — it must beat the input leakage.** The pin leaks up to about 1 µA. That leakage flows through your resistor and drops voltage across it:
+
+```
+V_error = 1 µA × 1 MΩ = 1.0 V
+```
+
+A 1 MΩ pull-up on a 3.3 V rail could therefore rest at 2.3 V. That is still a valid high, but the margin is gone. With 10 kΩ the error is 10 mV, which is nothing.
+
+**Upper bound 2 — rise time.** The resistor has to charge the pin and trace capacitance. That is an RC:
+
+```
+τ = R × C
+```
+
+With 10 kΩ and 20 pF, τ = 200 ns. Fast. With 1 MΩ and 100 pF of long-wire capacitance, τ = 100 µs — slow enough that the pin spends a long time crossing the threshold, and weak enough that coupled noise can move it.
+
+**Rule: 4.7 kΩ to 10 kΩ for a button on a short trace. Go lower for a long cable or a noisy environment. Do not go above 100 kΩ.**
+
+## Internal pulls on the STM32F3
+
+Every GPIO pin on the STM32F3 has a selectable internal pull-up and pull-down. You choose per pin, in the `GPIOx_PUPDR` register, two bits per pin:
+
+| PUPDR bits | Meaning |
+|---|---|
+| `00` | No pull (floating) |
+| `01` | Pull-up |
+| `10` | Pull-down |
+| `11` | Reserved |
+
+The value is roughly 40 kΩ, specified as a wide range of about 30 kΩ to 50 kΩ in the datasheet. It is not a precision part.
+
+Four limits are worth knowing:
+
+- The pull is only active while the pin is in input, output, or alternate-function mode. Selecting **analog** mode disables it.
+- The pull does not exist until your code writes `PUPDR`. Between power-on and that write, the pin is in its reset state.
+- The reset state of most STM32F3 pins is **input, floating**. So every pin floats during reset and boot until firmware configures it. The debug pins (PA13, PA14, PA15, PB3, PB4) are the exception; they come up with SWD/JTAG functions and their own fixed pulls.
+- The pull is lost when the MCU is held in reset, and in some low-power modes.
+
+For a button on a short trace with the MCU always running, an internal pull-up is entirely adequate and costs nothing.
+
+## Why this week uses an external resistor anyway
+
+The internal pull would work electrically. The external one is used for these reasons:
+
+**1. You can see it and measure it.** The resistor is a physical object on the breadboard. You can probe both ends, measure 3.3 V across it while the button is held, and calculate 330 µA from Ohm's law. An internal pull-up is invisible. The point of the exercise is to make the divider real, not to hide it inside a register.
+
+**2. It forces you to configure the GPIO explicitly.** With an external pull you must set `PUPDR` to `00` — no pull. That means writing the register deliberately rather than relying on a default. Then you can experiment: set the internal pull-down at the same time and watch the two resistors fight, and see the pin sit somewhere between the rails. That experiment is not possible without the external part.
+
+**3. It works before firmware does.** The external resistor holds the line at a defined level from the instant power is applied. The internal one only exists after your init code runs. Between reset and that line of code, the pin is floating and everything in section 2 applies. On a real product this window is where boot-time glitches, spurious interrupts and unexplained reset current live.
+
+**4. The value is known.** 10 kΩ ±1 % gives a current you can calculate to within 1 %, and an RC time constant you can predict. The internal pull is only guaranteed to sit somewhere between about 30 kΩ and 50 kΩ. If you later add a debounce capacitor across the button, you need a known R to set the filter time.
+
+**5. It is stronger.** 10 kΩ pulls roughly four times harder than the internal 40 kΩ. Breadboard wires are long, unshielded, and capacitive. The stronger pull gives faster edges and better noise immunity, which is exactly what a breadboard needs.
+
+**6. Not every pin or mode gives you the choice.** Analog mode disables the internal pull. Some peripherals reconfigure a pin and clear it. A library call that reinitialises a port can silently drop it. An external resistor cannot be switched off by a software mistake.
+
+**7. It is what real buses require.** I²C pull-ups must be external, because the internal ones are far too weak to meet the bus rise-time specification. Getting used to the external part now matches how you will do it on every real design.
+
+## Firmware: STM32F3, external pull-up, button on PA0
+
+An external pull-up means the pin rests HIGH and reads LOW when pressed. Configure the pin with **no** internal pull.
+
+```c
+#include <stdint.h>
+#include "stm32f3xx.h"
+
+#define BTN_PORT        GPIOA
+#define BTN_PIN         0u
+
+/* External 10 k pull-up to VDD, switch to GND: pressed reads 0. */
+#define BTN_ACTIVE_LOW  1
+
+void button_init(void)
+{
+    /* 1. Clock the port. Nothing in a GPIO block responds until you do. */
+    RCC->AHBENR |= RCC_AHBENR_GPIOAEN;
+
+    /* 2. Input mode: MODER bits = 00. */
+    BTN_PORT->MODER &= ~(3u << (BTN_PIN * 2u));
+
+    /* 3. No internal pull: PUPDR bits = 00.
+     *    The external resistor does this job. Enabling the internal
+     *    pull-down here would fight it and give an invalid mid-rail level. */
+    BTN_PORT->PUPDR &= ~(3u << (BTN_PIN * 2u));
+}
+
+/* Returns 1 when the button is physically pressed. */
+static inline uint8_t button_raw(void)
+{
+    uint8_t level = (uint8_t)((BTN_PORT->IDR >> BTN_PIN) & 1u);
+
+#if BTN_ACTIVE_LOW
+    return (uint8_t)(level == 0u);
+#else
+    return (uint8_t)(level != 0u);
+#endif
+}
+```
+
+The polarity inversion appears **once**, inside `button_raw()`. Nothing above this layer knows or cares which resistor is fitted. Change the hardware to a pull-down, flip one `#define`, and the application is unchanged.
+
+### For comparison: using the internal pull-up instead
+
+Only the `PUPDR` write differs. Everything else, including the active-low logic, is identical.
+
+```c
+void button_init_internal_pull(void)
+{
+    RCC->AHBENR |= RCC_AHBENR_GPIOAEN;
+
+    BTN_PORT->MODER &= ~(3u << (BTN_PIN * 2u));
+
+    /* PUPDR = 01: internal pull-up. */
+    BTN_PORT->PUPDR &= ~(3u << (BTN_PIN * 2u));
+    BTN_PORT->PUPDR |=  (1u << (BTN_PIN * 2u));
+}
+```
+
+## Debouncing
+
+A mechanical contact does not close cleanly. It bounces for 1 ms to 20 ms, and each bounce is a full logic transition. Read the pin in a loop and you will count one press as five.
+
+Do not use a delay. Sample at a fixed rate and require the level to be stable.
+
+```c
+#define DEBOUNCE_TICKS   4u          /* 4 × 5 ms tick = 20 ms stable */
+
+typedef struct {
+    uint8_t stable;                  /* the accepted, debounced state */
+    uint8_t candidate;               /* the level currently being tested */
+    uint8_t count;
+    uint8_t pressed_event;           /* set for one tick on a new press */
+} button_t;
+
+/* Call at a fixed rate, for example every 5 ms from a timer. */
+void button_tick(button_t *b)
+{
+    uint8_t now = button_raw();
+
+    b->pressed_event = 0u;
+
+    if (now != b->candidate) {
+        b->candidate = now;          /* level changed: restart the count */
+        b->count     = 0u;
+        return;
+    }
+
+    if (b->count < DEBOUNCE_TICKS) {
+        b->count++;
+        return;
+    }
+
+    if (b->stable != b->candidate) {
+        b->stable = b->candidate;
+        if (b->stable != 0u) {
+            b->pressed_event = 1u;   /* rising edge of the debounced state */
+        }
+    }
+}
+```
+
+A 100 nF capacitor across the switch also helps, and it is another reason to use a known external resistor. With 10 kΩ the filter time constant is `10000 × 100e-9 = 1 ms`. With the internal pull it would be somewhere between 3 ms and 5 ms, and you could not predict it.
+
+## Interrupts: the polarity decides the edge
+
+The choice of pull resistor determines which edge means "press". Configure the wrong one and the event fires on release.
+
+| Resistor | Press produces | Enable this edge |
+|---|---|---|
+| Pull-up | high → low | **falling** (`EXTI_FTSR`) |
+| Pull-down | low → high | **rising** (`EXTI_RTSR`) |
+
+```c
+void button_exti_init(void)
+{
+    RCC->APB2ENR |= RCC_APB2ENR_SYSCFGEN;
+
+    /* Route EXTI0 to port A. */
+    SYSCFG->EXTICR[0] &= ~SYSCFG_EXTICR1_EXTI0;
+    SYSCFG->EXTICR[0] |=  SYSCFG_EXTICR1_EXTI0_PA;
+
+    /* External pull-up: a press is a falling edge. */
+    EXTI->FTSR |=  (1u << BTN_PIN);
+    EXTI->RTSR &= ~(1u << BTN_PIN);
+
+    EXTI->IMR  |=  (1u << BTN_PIN);
+
+    NVIC_SetPriority(EXTI0_IRQn, 3u);
+    NVIC_EnableIRQ(EXTI0_IRQn);
+}
+```
+
+Keep the handler short, and never debounce inside it. Set a flag and start a timer. Contact bounce will fire this interrupt many times per press, and a slow handler turns that into a lockup.
+
+```c
+void EXTI0_IRQHandler(void)
+{
+    EXTI->PR = (1u << BTN_PIN);      /* clear the pending flag first */
+    button_flag = 1u;                /* volatile; the main loop debounces */
+}
+```
+
+## A useful diagnostic: detect a floating pin
+
+You can find a disconnected input in software. Enable the internal pull-up, read the pin, then enable the internal pull-down and read again.
+
+- Something is driving or pulling the line externally → both reads agree.
+- Nothing is connected → the pin follows whichever internal pull is active, so the two reads differ.
+
+```c
+/* Returns 1 if the pin appears to be unconnected. */
+uint8_t pin_is_floating(GPIO_TypeDef *port, uint8_t pin)
+{
+    uint32_t saved = port->PUPDR;
+    uint32_t mask  = 3u << (pin * 2u);
+    uint8_t  with_pu, with_pd;
+
+    port->PUPDR = (saved & ~mask) | (1u << (pin * 2u));   /* pull-up   */
+    delay_us(50);                                          /* settle RC */
+    with_pu = (uint8_t)((port->IDR >> pin) & 1u);
+
+    port->PUPDR = (saved & ~mask) | (2u << (pin * 2u));   /* pull-down */
+    delay_us(50);
+    with_pd = (uint8_t)((port->IDR >> pin) & 1u);
+
+    port->PUPDR = saved;
+
+    return (uint8_t)(with_pu != with_pd);
+}
+```
+
+Run this once at boot as a production self-test. It catches a missing resistor, a broken solder joint, and an unplugged connector.
+
+## Common mistakes
+
+- **Leaving an input floating.** See section 2. This is the root cause of most "random" GPIO behaviour.
+- **Inverting the logic in the application code.** The pin reads 0 when pressed, so `if (read_pin())` is wrong. Put the inversion in one accessor and never repeat it.
+- **Fitting an external pull-up and also enabling the internal pull-down.** The two resistors form a divider. With 10 kΩ up and 40 kΩ down the pin rests at `3.3 × 40/50 = 2.64 V`, which happens to read high, so it looks like it works. Change the part or the temperature and it stops.
+- **Forgetting the port clock.** Without `RCC->AHBENR`, every GPIO register read returns zero and every write is discarded. It looks exactly like a dead pin.
+- **Not clocking SYSCFG before writing EXTICR.** Same silent failure.
+- **Debouncing with a delay loop.** It blocks everything else and still misses fast double-presses.
+- **Enabling an interrupt on a pin before configuring its pull.** The floating pin generates an interrupt storm immediately.
+- **Leaving unused pins as input floating.** They burn current in the input buffer. Configure them as analog, or as input with a pull.  
+</details>
