@@ -16,21 +16,9 @@
   - [ ] Note the STM32F3 has internal pull-ups and pull-downs per pin. Note why this week uses an external one anyway.
 - [ ] **Push-pull vs open-drain.** Write down what each output stage can drive high, drive low, or not drive at all.
 - [ ] **Why I²C needs pull-ups.** Follow it from the open-drain answer above. Write it down in one sentence.
-- [ ] **3.3 V logic levels.** Find V_IH and V_IL for the STM32F303VC in the datasheet.
-  - [ ] Write down both numbers.
-  - [ ] Write down what the chip does with a voltage in the band between them.
-- [ ] **5 V tolerance.** The F3DISCOVERY I/O is 3.3 V. Some pins are 5 V-tolerant, some are not — the `FT` designation in the datasheet pin table tells you which. Check before you connect anything 5 V.
-- [ ] **Decoupling capacitors.** What they supply, and where they must be placed relative to the pin.
-- [ ] **Reading a trace.**
-  - [ ] Rise time — what you measure between, and why it isn't zero.
-  - [ ] Ringing — what it looks like and where it comes from.
-  - [ ] Bounce — mechanical, not electrical. Distinguish it from ringing on a capture.
 
 ## Done when
 
-- [ ] You have a saved logic-analyzer capture of real contact bounce, exported to disk, not just on screen.
-- [ ] You have one number in milliseconds: the worst-case bounce duration you measured. Keep this number and the capture — it is your debounce interval in Week 14.
-- [ ] You have kept the potentiometer divider wiring and its notes — it is the ADC input in Week 18.
 - [ ] You can explain out loud, from memory: why the measured LED current missed the calculated 5 mA, why the divider sagged under load, and what a floating input actually reads.
 - [ ] You can explain from memory why I²C needs pull-ups, in terms of what an open-drain output can and cannot drive.
 
